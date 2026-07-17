@@ -595,7 +595,7 @@
           <tr>
             <th>Fecha</th><th>N° Guía</th><th>Patente</th><th>Origen</th><th>Destino</th>
             <th>Prevencionista</th><th>T.Revisión</th><th>T.Prevención</th><th>T.Sellado</th>
-            <th>T.Total</th><th>Err.Rev</th><th>Err.Sell</th><th>Estado</th>
+            <th>T.Total</th><th>Estado</th>
             <th style="background:rgba(200,32,42,0.85);color:#fff;text-align:center;white-space:nowrap">🗑 Eliminar</th>
           </tr>
         </thead>
@@ -2211,7 +2211,7 @@ function renderDashboard() {
 function renderTablaHistorial(data) {
   const sorted=[...data].reverse();
   const tbody=document.getElementById('tabla-historial');
-  if (!sorted.length) { tbody.innerHTML=`<tr><td colspan="14"><div class="empty-state"><div class="empty-icon">📊</div><h3>Sin datos</h3></div></td></tr>`; return; }
+  if (!sorted.length) { tbody.innerHTML=`<tr><td colspan="12"><div class="empty-state"><div class="empty-icon">📊</div><h3>Sin datos</h3></div></td></tr>`; return; }
   tbody.innerHTML=sorted.map(g=>{
     try {
     const finalizada = g.t_sellado || g.cerrada;
@@ -2241,8 +2241,6 @@ function renderTablaHistorial(data) {
       <td style="font-family:var(--mono);font-size:11px">${f2}</td>
       <td style="font-family:var(--mono);font-size:11px">${f3}</td>
       <td class="${cls}" style="font-family:var(--mono);font-size:11px">${total}</td>
-      <td>${er?`<span class="badge badge-err-rev">🔴 ${er}</span>`:'<span style="color:var(--text2)">0</span>'}</td>
-      <td>${es?`<span class="badge badge-err-sell">🟣 ${es}</span>`:'<span style="color:var(--text2)">0</span>'}</td>
       <td>${estadoBadge(g)}</td>
       <td style="text-align:center">
         <button class="btn btn-danger btn-sm del-btn" data-id="${safeId}" data-guia="${safeGui}" style="padding:5px 10px;font-size:11px">🗑 Eliminar</button>
@@ -2250,7 +2248,7 @@ function renderTablaHistorial(data) {
     </tr>`;
     } catch(rowErr) {
       // Si una fila falla, mostrar fila mínima en vez de romper toda la tabla
-      return `<tr><td colspan="14" style="color:var(--danger);font-size:11px;padding:8px 16px">
+      return `<tr><td colspan="12" style="color:var(--danger);font-size:11px;padding:8px 16px">
         ⚠ Error al renderizar guía ${g && g.guia ? g.guia : '?'} — ${rowErr.message}
       </td></tr>`;
     }
