@@ -2213,6 +2213,7 @@ function renderTablaHistorial(data) {
   const tbody=document.getElementById('tabla-historial');
   if (!sorted.length) { tbody.innerHTML=`<tr><td colspan="14"><div class="empty-state"><div class="empty-icon">📊</div><h3>Sin datos</h3></div></td></tr>`; return; }
   tbody.innerHTML=sorted.map(g=>{
+    try {
     const finalizada = g.t_sellado || g.cerrada;
     const tFin = g.t_sellado || g.t_cierre;
     const f1=g.t_revision?fmtElapsed(elapsedMs(g.t_recepcion,g.t_revision)):'—';
@@ -2222,13 +2223,16 @@ function renderTablaHistorial(data) {
     const cls=finalizada?(g.cerrada?'':'elapsed-ok'):alertaClass(elapsedMs(g.t_recepcion),SLA.total);
     const er=(g.errores_revision||[]).length, es=(g.errores_sellado||[]).length;
     const rowCls=g.cerrada?'row-error-sellado':(es?'row-error-sellado':er?'row-error-revision':'');
+    // Escapar comillas simples en campos usados en onclick para evitar que rompan el HTML
+    const safeId  = String(g.id  ||'').replace(/'/g,"\\'").replace(/"/g,'&quot;');
+    const safeGui = String(g.guia||'').replace(/'/g,"\\'").replace(/"/g,'&quot;');
     return `<tr class="${rowCls}">
       <td style="font-family:var(--mono);font-size:11px">${fmtDate(g.t_recepcion)}</td>
-      <td style="font-family:var(--mono);font-size:12px"><strong>${g.guia}</strong></td>
-      <td style="font-family:var(--mono);font-size:11px">${g.patente}</td>
-      <td style="font-size:12px">${g.origen}</td>
+      <td style="font-family:var(--mono);font-size:12px"><strong>${safeGui}</strong></td>
+      <td style="font-family:var(--mono);font-size:11px">${g.patente||'—'}</td>
+      <td style="font-size:12px">${g.origen||'—'}</td>
       <td style="font-size:12px">${g.bultos||'—'}</td>
-      <td style="font-size:12px">${g.receptor}</td>
+      <td style="font-size:12px">${g.receptor||'—'}</td>
       <td style="font-family:var(--mono);font-size:11px">${f1}</td>
       <td style="font-family:var(--mono);font-size:11px">${f2}</td>
       <td style="font-family:var(--mono);font-size:11px">${f3}</td>
@@ -2237,9 +2241,15 @@ function renderTablaHistorial(data) {
       <td>${es?`<span class="badge badge-err-sell">🟣 ${es}</span>`:'<span style="color:var(--text2)">0</span>'}</td>
       <td>${estadoBadge(g)}</td>
       <td style="text-align:center">
-        <button class="btn btn-danger btn-sm" style="padding:5px 10px;font-size:11px" onclick="solicitarEliminar('${g.id}','${g.guia}')">🗑 Eliminar</button>
+        <button class="btn btn-danger btn-sm del-btn" data-id="${g.id||''}" data-guia="${(g.guia||'').replace(/"/g,'&quot;')}" style="padding:5px 10px;font-size:11px">🗑 Eliminar</button>
       </td>
     </tr>`;
+    } catch(rowErr) {
+      // Si una fila falla, mostrar fila mínima en vez de romper toda la tabla
+      return `<tr><td colspan="14" style="color:var(--danger);font-size:11px;padding:8px 16px">
+        ⚠ Error al renderizar guía ${g && g.guia ? g.guia : '?'} — ${rowErr.message}
+      </td></tr>`;
+    }
   }).join('');
 }
 
@@ -2726,28 +2736,31 @@ function delPinConfirm() {
 }
 
 function ejecutarEliminar(id) {
-  const idx = db.guias.findIndex(g => g.id === id);
-  if (idx === -1) { toast('\u26A0\uFE0F', 'Registro no encontrado'); return; }
+  // Buscar por ID exacto primero, luego con trim como fallback
+  let idx = db.guias.findIndex(g => g.id === id);
+  if (idx === -1 && id) idx = db.guias.findIndex(g => String(g.id||'').trim() === String(id).trim());
+  if (idx === -1) { toast('\u26A0\uFE0F', 'Registro no encontrado (ID: ' + id + ')'); return; }
   const guiaNum = db.guias[idx].guia;
   const guiaIdToDelete = db.guias[idx].id;
   db.guias.splice(idx, 1);
   saveDB(db);
+  registrarEliminadoLocal(guiaIdToDelete);
   autoSyncDelete(guiaIdToDelete);
-  // Animate row out
-  const row = document.querySelector(`button[onclick*="${id}"]`);
-  if (row) {
-    const tr = row.closest('tr');
-    if (tr) {
-      tr.style.transition = 'all 0.4s ease';
-      tr.style.opacity = '0';
-      tr.style.transform = 'translateX(40px)';
-      setTimeout(() => { renderTablaHistorial(getFiltered()); renderDashboard(); }, 420);
-    }
+  // Animar fila usando data-id (inmune a caracteres especiales)
+  const btn = document.querySelector('.del-btn[data-id]');
+  const allBtns = document.querySelectorAll('.del-btn');
+  let targetTr = null;
+  allBtns.forEach(b => { if (b.getAttribute('data-id') === id) targetTr = b.closest('tr'); });
+  if (targetTr) {
+    targetTr.style.transition = 'all 0.4s ease';
+    targetTr.style.opacity = '0';
+    targetTr.style.transform = 'translateX(40px)';
+    setTimeout(() => { renderTablaHistorial(getFiltered()); renderDashboard(); }, 420);
   } else {
     renderTablaHistorial(getFiltered());
     renderDashboard();
   }
-  toast('🗑', 'Registro de guía ' + guiaNum + ' eliminado');
+  toast('\uD83D\uDDD1', 'Registro de guía ' + guiaNum + ' eliminado');
 }
 
 // Keyboard support for delete modal
@@ -2761,6 +2774,21 @@ document.addEventListener('keydown', function(e) {
 
 document.getElementById('modal-del').addEventListener('click', function(e) {
   if (e.target === this) closeDeleteModal();
+});
+
+// ── Delegación de eventos para botones de eliminar ─────────────────────────
+// Usamos event delegation en vez de onclick inline para evitar problemas
+// con caracteres especiales en IDs/guías que vengan del Sheet
+document.addEventListener('click', function(e) {
+  const btn = e.target.closest('.del-btn');
+  if (!btn) return;
+  const id   = btn.getAttribute('data-id');
+  const guia = btn.getAttribute('data-guia');
+  if (id && guia) {
+    solicitarEliminar(id, guia);
+  } else {
+    toast('⚠️', 'No se pudo identificar el registro. Recarga y vuelve a intentar.');
+  }
 });
 
 // ============================================================
