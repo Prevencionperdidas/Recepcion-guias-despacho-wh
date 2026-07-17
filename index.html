@@ -2223,16 +2223,20 @@ function renderTablaHistorial(data) {
     const cls=finalizada?(g.cerrada?'':'elapsed-ok'):alertaClass(elapsedMs(g.t_recepcion),SLA.total);
     const er=(g.errores_revision||[]).length, es=(g.errores_sellado||[]).length;
     const rowCls=g.cerrada?'row-error-sellado':(es?'row-error-sellado':er?'row-error-revision':'');
-    // Escapar comillas simples en campos usados en onclick para evitar que rompan el HTML
-    const safeId  = String(g.id  ||'').replace(/'/g,"\\'").replace(/"/g,'&quot;');
-    const safeGui = String(g.guia||'').replace(/'/g,"\\'").replace(/"/g,'&quot;');
+    // String() forzado en TODOS los campos — el Sheet puede devolver números, fechas u objetos
+    const safeId  = String(g.id   ?? '');
+    const safeGui = String(g.guia  ?? '');
+    const safePat = String(g.patente  ?? '—');
+    const safeOri = String(g.origen   ?? '—');
+    const safeDes = String(g.bultos   ?? '—');
+    const safeRec = String(g.receptor ?? '—');
     return `<tr class="${rowCls}">
       <td style="font-family:var(--mono);font-size:11px">${fmtDate(g.t_recepcion)}</td>
       <td style="font-family:var(--mono);font-size:12px"><strong>${safeGui}</strong></td>
-      <td style="font-family:var(--mono);font-size:11px">${g.patente||'—'}</td>
-      <td style="font-size:12px">${g.origen||'—'}</td>
-      <td style="font-size:12px">${g.bultos||'—'}</td>
-      <td style="font-size:12px">${g.receptor||'—'}</td>
+      <td style="font-family:var(--mono);font-size:11px">${safePat}</td>
+      <td style="font-size:12px">${safeOri}</td>
+      <td style="font-size:12px">${safeDes}</td>
+      <td style="font-size:12px">${safeRec}</td>
       <td style="font-family:var(--mono);font-size:11px">${f1}</td>
       <td style="font-family:var(--mono);font-size:11px">${f2}</td>
       <td style="font-family:var(--mono);font-size:11px">${f3}</td>
@@ -2241,7 +2245,7 @@ function renderTablaHistorial(data) {
       <td>${es?`<span class="badge badge-err-sell">🟣 ${es}</span>`:'<span style="color:var(--text2)">0</span>'}</td>
       <td>${estadoBadge(g)}</td>
       <td style="text-align:center">
-        <button class="btn btn-danger btn-sm del-btn" data-id="${g.id||''}" data-guia="${(g.guia||'').replace(/"/g,'&quot;')}" style="padding:5px 10px;font-size:11px">🗑 Eliminar</button>
+        <button class="btn btn-danger btn-sm del-btn" data-id="${safeId}" data-guia="${safeGui}" style="padding:5px 10px;font-size:11px">🗑 Eliminar</button>
       </td>
     </tr>`;
     } catch(rowErr) {
