@@ -1064,7 +1064,7 @@ function setSyncUrl(url) { localStorage.setItem(SYNC_URL_KEY, url); }
 
 function updateSyncIndicator() {
   const url = getSyncUrl();
-  const icon = document.getElementById('sync-icon');
+  const icon  = document.getElementById('sync-icon');
   const label = document.getElementById('sync-label');
   if (!icon || !label) return;
   if (url) {
@@ -1074,11 +1074,13 @@ function updateSyncIndicator() {
       const mins = Math.round((new Date() - new Date(lastTs)) / 60000);
       sinceLabel = mins < 1 ? ' · ahora' : mins < 60 ? ` · ${mins}m` : ' · >1h';
     }
-    icon.textContent = '🟢';
-    label.textContent = 'Sync' + sinceLabel;
-    label.style.color = 'var(--accent3)';
+    const hasFails = typeof _consecutiveFails !== 'undefined' && _consecutiveFails >= 3;
+    const isActive = typeof _pollActive !== 'undefined' && _pollActive;
+    icon.textContent  = hasFails ? '🔴' : '🟢';
+    label.textContent = (hasFails ? 'Sin sync' : 'En vivo') + sinceLabel + (isActive ? ' ●' : '');
+    label.style.color = hasFails ? 'var(--danger)' : '#2ecc71';
   } else {
-    icon.textContent = '☁️';
+    icon.textContent  = '☁️';
     label.textContent = 'Sheets';
     label.style.color = '';
   }
@@ -1406,9 +1408,9 @@ async function autoSyncGuia(guia) {
   setSyncStatus('syncing');
   try {
     await gasPost(url, { action: 'upsert', guia });
-    // Después de subir, bajar el estado completo para que otros dispositivos
-    // también se enteren inmediatamente en su próximo poll
-    localStorage.setItem('last_change_ts', new Date().toISOString());
+    // Invalidar el timestamp local para que en el próximo poll
+    // detecte que el server tiene cambios más nuevos
+    _lastServerTs = null;
     setSyncStatus('ok');
   } catch(e) {
     setSyncStatus('error');
@@ -1421,7 +1423,7 @@ async function autoSyncDelete(guiaId) {
   setSyncStatus('syncing');
   try {
     await gasPost(url, { action: 'delete', id: guiaId });
-    localStorage.setItem('last_change_ts', new Date().toISOString());
+    _lastServerTs = null; // forzar re-sincronización en todos los dispositivos
     setSyncStatus('ok');
   } catch(e) { setSyncStatus('error'); }
 }
@@ -1429,47 +1431,83 @@ async function autoSyncDelete(guiaId) {
 // ============================================================
 // POLLING INTELIGENTE — 5s si hay guías activas, 15s si no
 // ============================================================
-let _syncPollTimer = null;
-let _syncPolling = false;
-let _lastServerTs = null; // timestamp del último cambio conocido en el server
+// ============================================================
+// MOTOR DE SINCRONIZACIÓN EN TIEMPO REAL
+// ============================================================
+// Arquitectura: un único setTimeout recursivo (más confiable que setInterval)
+// Flujo: poll → compara timestamp → si cambió → descarga → programa próximo poll
+// ============================================================
+
+let _syncPollTimer  = null;   // handle del próximo poll programado
+let _syncPolling    = false;  // lock para evitar polls solapados
+let _lastServerTs   = null;   // último timestamp conocido del server
+let _pollActive     = false;  // true cuando el polling está arrancado
+let _consecutiveFails = 0;    // contador de fallos consecutivos
 
 function getActivasCount() {
   return db.guias.filter(g => !g.t_sellado && !g.cerrada).length;
 }
 
+// Intervalo adaptativo: más frecuente cuando hay guías activas
+function getPollInterval() {
+  if (_consecutiveFails >= 3) return 30000; // si hay errores, esperar más
+  return getActivasCount() > 0 ? 5000 : 10000;
+}
+
 function startSyncPolling() {
-  if (_syncPollTimer) clearInterval(_syncPollTimer); // reinicia siempre fresco
-  _syncPollTimer = setInterval(async () => {
-    if (_syncPolling || !getSyncUrl()) return;
-    _syncPolling = true;
-    try {
-      // Primero pregunta solo el timestamp del último cambio en el server
-      // Si cambió, descarga todo; si no, no hace nada → muy eficiente
-      const data = await gasGet(getSyncUrl(), { action: 'getLastTs' });
-      if (data && data.status === 'ok' && data.lastTs) {
-        if (data.lastTs !== _lastServerTs) {
-          // Hay cambios nuevos en el server → descargar
-          _lastServerTs = data.lastTs;
-          await descargarDeSheets(true);
-        }
+  // Cancelar cualquier poll pendiente antes de arrancar uno nuevo
+  stopSyncPolling();
+  _pollActive = true;
+  _consecutiveFails = 0;
+  schedulePoll();
+}
+
+function schedulePoll() {
+  if (!_pollActive || !getSyncUrl()) return;
+  const interval = getPollInterval();
+  _syncPollTimer = setTimeout(runPoll, interval);
+}
+
+async function runPoll() {
+  _syncPollTimer = null;
+  if (!_pollActive || !getSyncUrl()) return;
+  if (_syncPolling) { schedulePoll(); return; } // si hay un poll activo, esperar
+
+  _syncPolling = true;
+  try {
+    const data = await gasGet(getSyncUrl(), { action: 'getLastTs' });
+
+    if (data && data.status === 'ok') {
+      // Propagar eliminaciones remotas aunque no haya otros cambios
+      if (data.deletedIds && data.deletedIds.length > 0) {
+        const before = db.guias.length;
+        mergeGuiasRemotas([], data.deletedIds);
+        if (db.guias.length !== before) refrescarVistas();
       }
-    } catch(e) {
-      // Si falla getLastTs, intentar descarga completa como fallback
-      try { await descargarDeSheets(true); } catch(_) {}
-    } finally {
-      _syncPolling = false;
+      // Hay cambios de datos nuevos → descargar todo
+      if (data.lastTs && data.lastTs !== _lastServerTs) {
+        _lastServerTs = data.lastTs;
+        await descargarDeSheets(true);
+      }
+      _consecutiveFails = 0;
+      setSyncStatus('ok');
     }
-    // Ajustar intervalo según actividad (5s con activas, 12s sin activas)
-    const interval = getActivasCount() > 0 ? 5000 : 12000;
-    clearInterval(_syncPollTimer);
-    _syncPollTimer = setTimeout(() => {
-      startSyncPolling();
-    }, interval);
-  }, getActivasCount() > 0 ? 5000 : 12000);
+  } catch(e) {
+    _consecutiveFails++;
+    if (_consecutiveFails >= 3) setSyncStatus('error');
+    // Fallback: si getLastTs falla 2 veces seguidas, descargar todo directamente
+    if (_consecutiveFails === 2) {
+      try { await descargarDeSheets(true); } catch(_) {}
+    }
+  } finally {
+    _syncPolling = false;
+    schedulePoll(); // siempre programar el próximo poll al terminar
+  }
 }
 
 function stopSyncPolling() {
-  if (_syncPollTimer) { clearInterval(_syncPollTimer); clearTimeout(_syncPollTimer); _syncPollTimer = null; }
+  _pollActive = false;
+  if (_syncPollTimer) { clearTimeout(_syncPollTimer); _syncPollTimer = null; }
 }
 
 // ── Indicador visual de sync en el header ──────────────────
