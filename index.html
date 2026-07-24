@@ -1123,47 +1123,57 @@ function showSyncStatus(msg, type) {
 // La forma correcta es enviar como FormData (simple request, sin preflight CORS).
 // Para LEER datos (fetchAll) se usa GET con parámetro, que sí soporta CORS completo.
 
-async function gasPost(url, payload) {
-  // Enviamos el JSON como campo de formulario "data" — Apps Script lo lee con e.parameter.data
-  const form = new FormData();
-  form.append('data', JSON.stringify(payload));
-  // mode: 'no-cors' evita errores de preflight CORS pero NO permite leer la respuesta.
-  // Para acciones de escritura (upsert/syncAll/delete) no necesitamos la respuesta.
-  await fetch(url, { method: 'POST', body: form, mode: 'no-cors' });
-}
+// ============================================================
+// CAPA DE COMUNICACIÓN CON GOOGLE APPS SCRIPT
+// ============================================================
+// TODAS las operaciones (lectura Y escritura) van por GET + JSONP.
+// Esto evita 100% los problemas CORS y garantiza que siempre
+// recibimos confirmación de que el dato llegó al Sheet.
+// ============================================================
 
-async function gasGet(url, params) {
-  // Apps Script + CORS: usamos JSONP para lecturas — evita 100% los problemas CORS/redirect
-  // Apps Script responde con callback({...}) cuando se le pasa ?callback=NOMBRE
-  return new Promise((resolve, reject) => {
-    const cbName = '__gas_cb_' + Date.now();
-    const qs = Object.entries({ ...params, callback: cbName })
-      .map(([k,v]) => k + '=' + encodeURIComponent(v)).join('&');
-    const script = document.createElement('script');
-    const timeout = setTimeout(() => {
+function gasCall(url, params, timeoutMs) {
+  timeoutMs = timeoutMs || 20000;
+  return new Promise(function(resolve, reject) {
+    var cbName = '__gas_' + Date.now() + '_' + Math.random().toString(36).slice(2);
+    var qs = Object.keys(params).map(function(k) {
+      return k + '=' + encodeURIComponent(
+        typeof params[k] === 'object' ? JSON.stringify(params[k]) : params[k]
+      );
+    }).join('&') + '&callback=' + cbName;
+
+    var script = document.createElement('script');
+    var timer = setTimeout(function() {
       cleanup();
-      reject(new Error('Timeout — el script tardó demasiado. Verifica la URL y que la implementación esté activa.'));
-    }, 15000);
+      reject(new Error('TIMEOUT: Apps Script no respondió en ' + (timeoutMs/1000) + 's. Verifica que la implementación esté activa.'));
+    }, timeoutMs);
 
     function cleanup() {
-      clearTimeout(timeout);
+      clearTimeout(timer);
       delete window[cbName];
       if (script.parentNode) script.parentNode.removeChild(script);
     }
 
-    window[cbName] = function(data) {
-      cleanup();
-      resolve(data);
-    };
-
-    script.onerror = function() {
-      cleanup();
-      reject(new Error('No se pudo cargar el script de Apps Script. Verifica la URL.'));
-    };
-
+    window[cbName] = function(data) { cleanup(); resolve(data); };
+    script.onerror = function() { cleanup(); reject(new Error('Error de red al contactar Apps Script.')); };
     script.src = url + '?' + qs;
     document.head.appendChild(script);
   });
+}
+
+// Lectura liviana (ping, getLastTs) — timeout corto
+function gasGet(url, params) {
+  return gasCall(url, params, 12000);
+}
+
+// Escritura de datos — los datos van serializados como param "payload"
+// Apps Script los lee con e.parameter.payload
+async function gasPost(url, payload) {
+  // Enviamos también por JSONP para tener CONFIRMACIÓN de que llegó
+  const result = await gasCall(url, {
+    action: payload.action,
+    payload: JSON.stringify(payload)
+  }, 25000);
+  return result;
 }
 
 async function guardarYProbarSync() {
@@ -1267,7 +1277,7 @@ async function descargarDeSheets(silent) {
 }
 
 // ============================================================
-// SUBIR TODO — envía todos los registros locales (POST no-cors)
+// SUBIR TODO — envía todos los registros locales (JSONP, con confirmación)
 // ============================================================
 async function sincronizarTodoAhora(silent) {
   const url = getSyncUrl();
@@ -1397,7 +1407,7 @@ function restaurarRespaldo() {
 }
 
 // ============================================================
-// AUTO-SYNC ESCRITURA — envía un registro puntual (no-cors, silencioso)
+// AUTO-SYNC ESCRITURA — envía un registro puntual (JSONP, con confirmación)
 // ============================================================
 // ============================================================
 // AUTO-SYNC — sube cambio Y luego baja el estado completo
@@ -1407,12 +1417,19 @@ async function autoSyncGuia(guia) {
   if (!url) return;
   setSyncStatus('syncing');
   try {
-    await gasPost(url, { action: 'upsert', guia });
-    // Invalidar el timestamp local para que en el próximo poll
-    // detecte que el server tiene cambios más nuevos
-    _lastServerTs = null;
-    setSyncStatus('ok');
+    const res = await gasPost(url, { action: 'upsert', guia });
+    if (res && res.status === 'ok') {
+      _lastServerTs = res.lastTs || null; // guardar el nuevo timestamp del server
+      setSyncStatus('ok');
+    } else {
+      // Si el resultado es error, reintentar una vez
+      await gasPost(url, { action: 'upsert', guia });
+      _lastServerTs = null;
+      setSyncStatus('ok');
+    }
   } catch(e) {
+    // Fallback: marcar para que el próximo poll detecte inconsistencia
+    _lastServerTs = null;
     setSyncStatus('error');
   }
 }
@@ -1422,10 +1439,14 @@ async function autoSyncDelete(guiaId) {
   if (!url) return;
   setSyncStatus('syncing');
   try {
-    await gasPost(url, { action: 'delete', id: guiaId });
-    _lastServerTs = null; // forzar re-sincronización en todos los dispositivos
+    const res = await gasPost(url, { action: 'delete', id: guiaId });
+    if (res && res.lastTs) _lastServerTs = res.lastTs;
+    else _lastServerTs = null;
     setSyncStatus('ok');
-  } catch(e) { setSyncStatus('error'); }
+  } catch(e) {
+    _lastServerTs = null;
+    setSyncStatus('error');
+  }
 }
 
 // ============================================================
