@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+<!DOCTYPE html><!DOCTYPE html>
 <html lang="es">
 <head>
   <meta charset="UTF-8" />
@@ -1246,8 +1246,7 @@ async function descargarDeSheets(silent) {
   try {
     if (!silent) setSyncStatus('syncing');
 
-    // ── RESPALDO antes de cualquier operación de descarga ──────────────
-    // Guarda una copia de seguridad en localStorage por si algo sale mal
+    // Respaldo preventivo
     if (db.guias.length > 0) {
       localStorage.setItem('despacho_backup_' + todayStr(), JSON.stringify(db));
     }
@@ -1255,15 +1254,32 @@ async function descargarDeSheets(silent) {
     const data = await gasGet(url, { action: 'fetchAll' });
     if (data && data.status === 'ok' && Array.isArray(data.guias)) {
       if (data.lastTs) _lastServerTs = data.lastTs;
-      const prevCount = db.guias.length;
-      mergeGuiasRemotas(data.guias, data.deletedIds || []); // aplica tombstones remotos
+
+      // Contar activos ANTES del merge para detectar cambios
+      const activasBefore = db.guias.filter(g => !g.t_sellado && !g.cerrada).map(g => g.id);
+      const prevTotal = db.guias.length;
+
+      mergeGuiasRemotas(data.guias, data.deletedIds || []);
       refrescarVistas();
-      const added = db.guias.length - prevCount;
+
+      const activasAfter = db.guias.filter(g => !g.t_sellado && !g.cerrada).map(g => g.id);
+      const nuevasActivas = activasAfter.filter(id => !activasBefore.includes(id)).length;
+      const selladasRemoto = activasBefore.filter(id => !activasAfter.includes(id)).length;
+      const totalAdded = db.guias.length - prevTotal;
+
       setSyncStatus('ok');
+
       if (!silent) {
-        showSyncStatus('✅ ' + data.guias.length + ' registros del Sheet combinados con los locales (' + db.guias.length + ' total)', 'ok');
-      } else if (added > 0) {
-        toast('📲', added + ' guía(s) nueva(s) recibida(s) de otro dispositivo');
+        showSyncStatus('✅ ' + data.guias.length + ' registros sincronizados (' + db.guias.length + ' total local)', 'ok');
+      } else {
+        // Notificaciones específicas por tipo de cambio
+        if (nuevasActivas > 0) {
+          toast('⚡', nuevasActivas + ' guía(s) activa(s) nueva(s) desde otro PC — revisa Activos');
+        } else if (selladasRemoto > 0) {
+          toast('✅', selladasRemoto + ' guía(s) sellada(s) desde otro PC');
+        } else if (totalAdded > 0) {
+          toast('📲', totalAdded + ' registro(s) nuevo(s) recibido(s)');
+        }
       }
     } else {
       setSyncStatus('error');
@@ -1358,10 +1374,46 @@ function mergeGuiasRemotas(remotas) {
 }
 
 function refrescarVistas() {
+  // Activos: SIEMPRE se actualiza en segundo plano independiente de qué página esté visible
+  // Esto garantiza que al cambiar a la pestaña Activos, la info ya esté fresca
+  renderActivos();
   renderTablaHoy();
-  if (document.getElementById('page-activos').classList.contains('active')) renderActivos();
+
+  // Actualizar la página visible también
+  if (document.getElementById('page-activos').classList.contains('active')) {
+    // ya se renderizó arriba
+  }
   if (document.getElementById('page-dashboard').classList.contains('active')) renderDashboard();
   if (document.getElementById('page-errores').classList.contains('active')) renderErrores();
+
+  // Actualizar el badge de alertas SLA con la nueva data
+  checkSLAAlerts();
+
+  // Mostrar badge en pestaña Activos con el número de guías activas actuales
+  actualizarBadgeActivos();
+}
+
+function actualizarBadgeActivos() {
+  const activas = db.guias.filter(g => !g.t_sellado && !g.cerrada).length;
+  // Buscar si ya existe un badge de activos (diferente al de SLA)
+  document.querySelectorAll('.activos-count-badge').forEach(b => b.remove());
+  if (activas > 0) {
+    document.querySelectorAll('.nav-tab').forEach(t => {
+      if (t.textContent.includes('Activos') || t.textContent.includes('activo')) {
+        const badge = document.createElement('span');
+        badge.className = 'activos-count-badge';
+        badge.textContent = activas;
+        badge.style.cssText = `
+          display:inline-flex;align-items:center;justify-content:center;
+          background:var(--ikea-blue);color:#fff;
+          font-size:9px;font-weight:800;font-family:var(--mono);
+          border-radius:10px;padding:1px 5px;margin-left:4px;vertical-align:middle;
+          border:1px solid rgba(255,255,255,0.4);
+        `;
+        t.appendChild(badge);
+      }
+    });
+  }
 }
 
 function desconectarSync() {
@@ -1628,15 +1680,22 @@ function showPage(id) {
   document.getElementById('page-' + id).classList.add('active');
   document.querySelectorAll('.nav-tab').forEach(t => {
     const txt = t.textContent.toLowerCase();
-    if (id === 'registro' && txt.includes('registro')) t.classList.add('active');
-    if (id === 'activos' && txt.includes('activo')) t.classList.add('active');
-    if (id === 'dashboard' && txt.includes('dashboard')) t.classList.add('active');
-    if (id === 'errores' && txt.includes('error')) t.classList.add('active');
+    if (id === 'registro'   && txt.includes('registro'))  t.classList.add('active');
+    if (id === 'activos'    && txt.includes('activo'))    t.classList.add('active');
+    if (id === 'dashboard'  && txt.includes('dashboard')) t.classList.add('active');
+    if (id === 'errores'    && txt.includes('error'))     t.classList.add('active');
   });
-  if (id === 'activos') renderActivos();
+  if (id === 'activos') {
+    renderActivos();
+    // Al abrir Activos: descargar inmediatamente del Sheet para garantizar data fresca
+    // sin esperar el próximo poll automático
+    if (getSyncUrl()) {
+      descargarDeSheets(true).then(() => renderActivos());
+    }
+  }
   if (id === 'dashboard') renderDashboard();
-  if (id === 'registro') renderTablaHoy();
-  if (id === 'errores') renderErrores();
+  if (id === 'registro')  renderTablaHoy();
+  if (id === 'errores')   renderErrores();
 }
 
 // ============================================================
