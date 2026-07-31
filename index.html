@@ -1,4 +1,4 @@
-<!DOCTYPE html><!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="es">
 <head>
   <meta charset="UTF-8" />
@@ -153,6 +153,8 @@
 
     /* TABLE */
     .table-wrap { background: #ffffff; border: 2px solid var(--ikea-blue); border-radius: 16px; overflow: hidden; margin-bottom: 24px; box-shadow: 0 6px 24px rgba(0,58,114,0.18); }
+    /* Tabla historial: celdas quiebran verticalmente, no expanden horizontalmente */
+    #tabla-historial td { word-break: break-word; overflow-wrap: break-word; white-space: normal; vertical-align: middle; }
     .table-header { display: flex; align-items: center; justify-content: space-between; padding: 16px 22px; border-bottom: 4px solid var(--ikea-yellow); background: linear-gradient(135deg, var(--ikea-blue-dark) 0%, var(--ikea-blue) 100%); }
     .table-header-title { font-size: 15px; font-weight: 800; color: #fff; letter-spacing: 0.3px; }
     table { width: 100%; border-collapse: collapse; }
@@ -593,13 +595,21 @@
           <button class="btn btn-ghost btn-sm" onclick="exportarCSV()">⬇ Exportar CSV</button>
         </div>
       </div>
-      <table>
+      <table style="table-layout:fixed;width:100%">
         <thead>
           <tr>
-            <th>Fecha</th><th>N° Guía</th><th>Patente</th><th>Origen</th><th>Destino</th>
-            <th>Prevencionista</th><th>T.Revisión</th><th>T.Prevención</th><th>T.Sellado</th>
-            <th>T.Total</th><th>Estado</th>
-            <th style="background:rgba(200,32,42,0.85);color:#fff;text-align:center;white-space:nowrap">🗑 Eliminar</th>
+            <th style="width:75px;min-width:65px">Fecha</th>
+            <th style="width:110px;min-width:90px">N° Guía</th>
+            <th style="width:75px;min-width:65px">Patente</th>
+            <th style="width:65px;min-width:55px">Origen</th>
+            <th style="width:85px;min-width:75px">Destino</th>
+            <th style="width:105px;min-width:95px">Prevencionista</th>
+            <th style="width:68px;min-width:58px">T.Rev</th>
+            <th style="width:68px;min-width:58px">T.Prev</th>
+            <th style="width:68px;min-width:58px">T.Sell</th>
+            <th style="width:68px;min-width:58px">T.Total</th>
+            <th style="width:85px;min-width:75px">Estado</th>
+            <th style="background:rgba(200,32,42,0.85);color:#fff;text-align:center;white-space:nowrap;width:80px;min-width:75px">🗑 Elim.</th>
           </tr>
         </thead>
         <tbody id="tabla-historial"></tbody>
@@ -1165,15 +1175,41 @@ function gasGet(url, params) {
   return gasCall(url, params, 12000);
 }
 
-// Escritura de datos — los datos van serializados como param "payload"
-// Apps Script los lee con e.parameter.payload
+// Escritura de datos — usa POST real (FormData) para evitar límite de URL
+// Apps Script lee el campo "payload" desde e.parameter.payload
 async function gasPost(url, payload) {
-  // Enviamos también por JSONP para tener CONFIRMACIÓN de que llegó
-  const result = await gasCall(url, {
-    action: payload.action,
-    payload: JSON.stringify(payload)
-  }, 25000);
-  return result;
+  // Para acciones con pocos datos (upsert/delete) usamos JSONP que da confirmación
+  // Para syncAll con muchos registros usamos POST+FormData (sin límite de tamaño)
+  const json = JSON.stringify(payload);
+
+  if (payload.action === 'syncAll' || json.length > 4000) {
+    // POST real con FormData — sin límite de tamaño, Apps Script lo lee bien
+    const form = new FormData();
+    form.append('payload', json);
+    form.append('action', payload.action);
+    try {
+      await fetch(url, { method: 'POST', body: form, mode: 'no-cors' });
+    } catch(e) {}
+    // No podemos leer la respuesta con no-cors, así que esperamos
+    // y confiamos en que el próximo poll detectará el cambio
+    return { status: 'ok' };
+  } else {
+    // JSONP para escrituras pequeñas — da confirmación inmediata
+    try {
+      const result = await gasCall(url, {
+        action: payload.action,
+        payload: json
+      }, 20000);
+      return result || { status: 'ok' };
+    } catch(e) {
+      // Fallback a POST si JSONP falla
+      const form = new FormData();
+      form.append('payload', json);
+      form.append('action', payload.action);
+      try { await fetch(url, { method: 'POST', body: form, mode: 'no-cors' }); } catch(_) {}
+      return { status: 'ok' };
+    }
+  }
 }
 
 async function guardarYProbarSync() {
@@ -1323,21 +1359,40 @@ async function sincronizarTodoAhora(silent) {
 // Solo se AGREGAN guías que existen en el Sheet pero no en local,
 // y se COMPLETAN campos que están vacíos en local con datos del Sheet.
 // ============================================================
-function mergeGuiasRemotas(remotas) {
-  // Nada remoto → no tocar nada local
-  if (!remotas || remotas.length === 0) return;
-
-  const localById = {};
-  db.guias.forEach(g => { localById[g.id] = g; });
+function mergeGuiasRemotas(remotas, deletedIds) {
   let changed = false;
 
-  remotas.forEach(rg => {
-    // Ignorar entradas remotas sin ID válido o sin número de guía
-    if (!rg || !rg.id || !rg.guia) return;
+  // ── PASO 1: Aplicar eliminaciones remotas ────────────────────────────────
+  if (deletedIds && deletedIds.length > 0) {
+    const elimSet = new Set(deletedIds.map(id => String(id)));
+    // Registrar en lista local para que no vuelvan a aparecer
+    deletedIds.forEach(id => registrarEliminadoLocal(String(id)));
+    const antes = db.guias.length;
+    db.guias = db.guias.filter(g => !elimSet.has(String(g.id)));
+    if (db.guias.length !== antes) changed = true;
+  }
 
-    const local = localById[rg.id];
+  // ── PASO 2: Aplicar lista local de eliminados (este dispositivo borró algo) ──
+  const eliminadosLocales = new Set(getEliminadosLocales().map(id => String(id)));
+
+  // ── PASO 3: Merge de guías remotas ──────────────────────────────────────
+  if (!remotas || remotas.length === 0) {
+    if (changed) saveDB(db);
+    return;
+  }
+
+  const localById = {};
+  db.guias.forEach(g => { localById[String(g.id)] = g; });
+
+  remotas.forEach(rg => {
+    if (!rg || !rg.id || !rg.guia) return;
+    const rgId = String(rg.id);
+    // Si fue eliminado localmente, no restaurar
+    if (eliminadosLocales.has(rgId)) return;
+
+    const local = localById[rgId];
     if (!local) {
-      // Guía que existe en el Sheet pero NO en este dispositivo → agregar
+      // Guía nueva desde otro dispositivo → agregar
       if (!rg.log) rg.log = [];
       if (!rg.errores_revision) rg.errores_revision = [];
       if (!rg.errores_sellado) rg.errores_sellado = [];
@@ -1345,9 +1400,7 @@ function mergeGuiasRemotas(remotas) {
       db.guias.push(rg);
       changed = true;
     } else {
-      // Guía que existe en AMBOS lados:
-      // Solo completar campos que están vacíos localmente con valor real del Sheet
-      // NUNCA reemplazar un valor local existente con null/vacío/undefined remoto
+      // Guía existe en ambos: completar campos vacíos localmente
       const setIfMissing = (field) => {
         if (!local[field] && rg[field]) { local[field] = rg[field]; changed = true; }
       };
@@ -1357,7 +1410,6 @@ function mergeGuiasRemotas(remotas) {
       setIfMissing('t_cierre');
       setIfMissing('cierre_motivo');
       if (!local.cerrada && rg.cerrada) { local.cerrada = rg.cerrada; changed = true; }
-      // Errores: solo agregar si local no tiene ninguno
       if ((!local.errores_revision || !local.errores_revision.length) && rg.errores_revision && rg.errores_revision.length) {
         local.errores_revision = rg.errores_revision; changed = true;
       }
@@ -2240,12 +2292,7 @@ function getFiltered() {
     return true;
   });
 }
-function resetFiltros() {
-  document.getElementById('f-desde').value = '';
-  document.getElementById('f-hasta').value = todayStr();
-  document.getElementById('f-origen-dash').value = '';
-  renderDashboard();
-}
+// resetFiltros — definida más abajo con PIN de seguridad
 
 function renderDashboard() {
   const data = getFiltered();
@@ -2353,7 +2400,7 @@ function renderTablaHistorial(data) {
     const safeRec = String(g.receptor ?? '—');
     return `<tr class="${rowCls}">
       <td style="font-family:var(--mono);font-size:11px">${fmtDate(g.t_recepcion)}</td>
-      <td style="font-family:var(--mono);font-size:12px"><strong>${safeGui}</strong></td>
+      <td style="font-family:var(--mono);font-size:12px;max-width:110px;word-break:break-all;white-space:normal"><strong>${safeGui}</strong></td>
       <td style="font-family:var(--mono);font-size:11px">${safePat}</td>
       <td style="font-size:12px">${safeOri}</td>
       <td style="font-size:12px">${safeDes}</td>
@@ -2397,13 +2444,7 @@ function getErrFiltered() {
     return true;
   });
 }
-function resetFiltrosErr() {
-  document.getElementById('fe-desde').value='';
-  document.getElementById('fe-hasta').value=todayStr();
-  document.getElementById('fe-tipo').value='';
-  document.getElementById('fe-prev').value='';
-  renderErrores();
-}
+// resetFiltrosErr — definida más abajo con PIN de seguridad
 
 function renderErrores() {
   const data = getErrFiltered();
