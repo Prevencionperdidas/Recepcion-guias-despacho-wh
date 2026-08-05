@@ -851,6 +851,7 @@
         <button class="btn btn-primary" onclick="guardarYProbarSync()">🔗 Conectar y Probar</button>
         <button class="btn btn-warn" onclick="descargarDeSheets()">⬇️ Descargar de Sheets</button>
         <button class="btn btn-success" onclick="sincronizarTodoAhora()">⬆️ Subir Todo Ahora</button>
+        <button class="btn btn-ghost" onclick="limpiarActivosFalsos()">🧹 Limpiar Activos Falsos</button>
         <button class="btn btn-ghost" onclick="restaurarRespaldo()">🔄 Restaurar Respaldo Local</button>
         <button class="btn btn-ghost" onclick="desconectarSync()">Desconectar</button>
       </div>
@@ -1387,8 +1388,21 @@ function mergeGuiasRemotas(remotas, deletedIds) {
   remotas.forEach(rg => {
     if (!rg || !rg.id || !rg.guia) return;
     const rgId = String(rg.id);
-    // Si fue eliminado localmente, no restaurar
     if (eliminadosLocales.has(rgId)) return;
+
+    // Normalizar timestamps vacíos que vienen como string '' desde el Sheet
+    ['t_recepcion','t_revision','t_prevencion','t_sellado','t_cierre'].forEach(f => {
+      if (rg[f] === '' || rg[f] === 'null' || rg[f] === 'undefined') rg[f] = null;
+    });
+
+    // Si el campo Estado dice "Sellado" pero t_sellado está vacío → reconstruir timestamp
+    // Esto pasa cuando syncAll subió el Estado pero no el timestamp exacto
+    if (!rg.t_sellado && rg.estado === 'Sellado') {
+      rg.t_sellado = rg.t_recepcion || new Date().toISOString(); // placeholder
+    }
+    if (!rg.t_sellado && rg.cerrada) {
+      rg.t_cierre = rg.t_cierre || new Date().toISOString();
+    }
 
     const local = localById[rgId];
     if (!local) {
@@ -1475,6 +1489,61 @@ function desconectarSync() {
   updateSyncIndicator();
   stopSyncPolling();
   showSyncStatus('🔌 Desconectado de Google Sheets', 'info');
+}
+
+// ============================================================
+// LIMPIAR ACTIVOS FALSOS
+// Corrige guías que el Sheet devolvió sin t_sellado pero que
+// en realidad ya estaban selladas (Estado = Sellado)
+// ============================================================
+async function limpiarActivosFalsos() {
+  const activasSospechosas = db.guias.filter(g => !g.t_sellado && !g.cerrada);
+  if (activasSospechosas.length === 0) {
+    showSyncStatus('✅ No hay activos falsos detectados', 'ok');
+    return;
+  }
+
+  // Si hay Sheet conectado, descargar primero para tener datos frescos
+  if (getSyncUrl()) {
+    showSyncStatus('🔄 Verificando estado en Google Sheets...', 'info');
+    await descargarDeSheets(true);
+  }
+
+  // Después del merge, verificar de nuevo
+  const aun_activas = db.guias.filter(g => !g.t_sellado && !g.cerrada);
+
+  // Mostrar al usuario cuáles son y pedir confirmación
+  const guiasStr = aun_activas.slice(0,10).map(g =>
+    `• ${g.guia} (${g.patente}) — ${new Date(g.t_recepcion).toLocaleDateString('es-CL')}`
+  ).join('\n');
+  const msg = `Se encontraron ${aun_activas.length} guías marcadas como activas.\n\n${guiasStr}${aun_activas.length>10?'\n... y '+(aun_activas.length-10)+' más':''}\n\n¿Deseas marcar TODAS como SELLADAS ahora?`;
+
+  if (!confirm(msg)) {
+    showSyncStatus('ℹ️ Operación cancelada', 'info');
+    return;
+  }
+
+  // Marcar como selladas con timestamp de ahora (o el de prevencion si existe)
+  const ts = new Date().toISOString();
+  let count = 0;
+  aun_activas.forEach(g => {
+    if (!g.t_sellado) {
+      g.t_sellado = g.t_prevencion || g.t_revision || ts;
+      g.log = g.log || [];
+      g.log.push({ ts, accion: '🧹 Sellado corregido (limpieza activos falsos)', user: 'sistema', tipo: 'ok' });
+      count++;
+    }
+  });
+
+  saveDB(db);
+  refrescarVistas();
+  showSyncStatus(`✅ ${count} guías corregidas y marcadas como selladas`, 'ok');
+  toast('🧹', `${count} activos falsos corregidos`);
+
+  // Subir correcciones al Sheet
+  if (getSyncUrl()) {
+    await sincronizarTodoAhora(true);
+  }
 }
 
 function restaurarRespaldo() {
