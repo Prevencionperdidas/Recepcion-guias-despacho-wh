@@ -1272,37 +1272,32 @@ async function guardarYProbarSync() {
     return;
   }
 
-  // ── CONEXIÓN EXITOSA — sincronizar datos ─────────────────────
+  // ── CONEXIÓN EXITOSA — sincronizar datos en lotes ────────────
   updateSyncIndicator();
-  showSyncStatus('⬇️ Leyendo registros del Sheet...', 'info');
 
-  const sheetData = await gasGet(url, { action: 'fetchAll' }).catch(() => null);
-  const sheetGuias = (sheetData && sheetData.status === 'ok' && Array.isArray(sheetData.guias))
-    ? sheetData.guias : [];
+  // Obtener conteo primero (liviano)
+  showSyncStatus('⬇️ Consultando Sheet (' + db.guias.length + ' registros locales)...', 'info');
+  const countData = await gasGet(url, { action: 'fetchCount' }).catch(() => null);
+  const sheetCount = (countData && countData.count) || 0;
   const localCount = db.guias.length;
-  const sheetCount = sheetGuias.length;
 
-  if (sheetCount > localCount) {
-    showSyncStatus('📲 Sheet: ' + sheetCount + ' registros · Local: ' + localCount + '. Descargando...', 'info');
-    if (sheetData && sheetData.lastTs) _lastServerTs = sheetData.lastTs;
-    mergeGuiasRemotas(sheetGuias, (sheetData && sheetData.deletedIds) || []);
-    refrescarVistas();
-    if (db.guias.length > sheetCount) await gasPost(url, { action: 'syncAll', guias: db.guias });
-  } else if (localCount > sheetCount) {
-    showSyncStatus('⬆️ Local: ' + localCount + ' registros · Subiendo al Sheet...', 'info');
+  if (sheetCount === 0 && localCount > 0) {
+    // Sheet vacío y tenemos datos locales → subir
+    showSyncStatus('⬆️ Subiendo ' + localCount + ' registros al Sheet...', 'info');
     await gasPost(url, { action: 'syncAll', guias: db.guias });
-    await new Promise(r => setTimeout(r, 1500));
-    mergeGuiasRemotas(sheetGuias, (sheetData && sheetData.deletedIds) || []);
-    refrescarVistas();
+    showSyncStatus('✅ ' + localCount + ' registros subidos al Sheet', 'ok');
   } else {
-    if (sheetData && sheetData.lastTs) _lastServerTs = sheetData.lastTs;
-    mergeGuiasRemotas(sheetGuias, (sheetData && sheetData.deletedIds) || []);
-    refrescarVistas();
-    await gasPost(url, { action: 'syncAll', guias: db.guias });
+    // Descargar todo por lotes (maneja redes lentas)
+    showSyncStatus('⬇️ Descargando ' + sheetCount + ' registros en lotes...', 'info');
+    await descargarDeSheets(false);
+    // Si hay registros locales extra, subirlos también
+    if (db.guias.length > sheetCount) {
+      await gasPost(url, { action: 'syncAll', guias: db.guias });
+    }
   }
 
   startSyncPolling();
-  showSyncStatus('✅ Conectado — ' + db.guias.length + ' registros · Sync automático cada 5-10s', 'ok');
+  showSyncStatus('✅ Conectado — ' + db.guias.length + ' registros · Sync automático activo', 'ok');
 }
 
 // ============================================================
@@ -1311,7 +1306,8 @@ async function guardarYProbarSync() {
 async function descargarDeSheets(silent) {
   const url = getSyncUrl();
   if (!url) { if (!silent) toast('⚠️', 'Primero conecta tu Google Sheet'); return; }
-  if (!silent) showSyncStatus('⬇️ Descargando registros del Sheet...', 'info');
+  if (!silent) showSyncStatus('⬇️ Iniciando descarga por lotes...', 'info');
+
   try {
     if (!silent) setSyncStatus('syncing');
 
@@ -1320,15 +1316,51 @@ async function descargarDeSheets(silent) {
       localStorage.setItem('despacho_backup_' + todayStr(), JSON.stringify(db));
     }
 
-    const data = await gasGet(url, { action: 'fetchAll' });
-    if (data && data.status === 'ok' && Array.isArray(data.guias)) {
-      if (data.lastTs) _lastServerTs = data.lastTs;
+    // ── PASO 1: Obtener cuántos registros hay ──────────────────
+    const countData = await gasGet(url, { action: 'fetchCount' });
+    const total = (countData && countData.count) || 0;
+    const deletedIds = (countData && countData.deletedIds) || [];
+    if (countData && countData.lastTs) _lastServerTs = countData.lastTs;
 
-      // Contar activos ANTES del merge para detectar cambios
+    if (!silent) showSyncStatus('⬇️ Descargando ' + total + ' registros en lotes de 50...', 'info');
+
+    // ── PASO 2: Descargar en lotes de 50 ──────────────────────
+    const LOTE = 50;
+    const todasGuias = [];
+    let offset = 0;
+    let lotesOk = 0;
+
+    while (offset < total || (total === 0 && offset === 0)) {
+      try {
+        const batch = await gasGet(url, { action: 'fetchBatch', offset, limit: LOTE });
+        if (batch && batch.status === 'ok' && Array.isArray(batch.guias)) {
+          todasGuias.push(...batch.guias);
+          lotesOk++;
+          if (!silent) {
+            showSyncStatus(
+              '⬇️ Descargando... ' + todasGuias.length + '/' + total + ' registros',
+              'info'
+            );
+          }
+          if (batch.guias.length < LOTE) break; // último lote
+          offset += LOTE;
+        } else {
+          break;
+        }
+      } catch(batchErr) {
+        // Si un lote falla, esperar 2s y continuar con el siguiente
+        await new Promise(r => setTimeout(r, 2000));
+        offset += LOTE;
+        if (offset > total) break;
+      }
+    }
+
+    // ── PASO 3: Aplicar merge con lo descargado ────────────────
+    if (todasGuias.length > 0) {
       const activasBefore = db.guias.filter(g => !g.t_sellado && !g.cerrada).map(g => g.id);
       const prevTotal = db.guias.length;
 
-      mergeGuiasRemotas(data.guias, data.deletedIds || []);
+      mergeGuiasRemotas(todasGuias, deletedIds);
       refrescarVistas();
 
       const activasAfter = db.guias.filter(g => !g.t_sellado && !g.cerrada).map(g => g.id);
@@ -1339,21 +1371,38 @@ async function descargarDeSheets(silent) {
       setSyncStatus('ok');
 
       if (!silent) {
-        showSyncStatus('✅ ' + data.guias.length + ' registros sincronizados (' + db.guias.length + ' total local)', 'ok');
+        showSyncStatus(
+          '✅ ' + todasGuias.length + ' registros descargados en ' + lotesOk + ' lotes — ' + db.guias.length + ' total local',
+          'ok'
+        );
       } else {
-        // Notificaciones específicas por tipo de cambio
-        if (nuevasActivas > 0) {
-          toast('⚡', nuevasActivas + ' guía(s) activa(s) nueva(s) desde otro PC — revisa Activos');
-        } else if (selladasRemoto > 0) {
-          toast('✅', selladasRemoto + ' guía(s) sellada(s) desde otro PC');
-        } else if (totalAdded > 0) {
-          toast('📲', totalAdded + ' registro(s) nuevo(s) recibido(s)');
+        if (nuevasActivas > 0) toast('⚡', nuevasActivas + ' guía(s) activa(s) nueva(s) de otro PC');
+        else if (selladasRemoto > 0) toast('✅', selladasRemoto + ' guía(s) sellada(s) desde otro PC');
+        else if (totalAdded > 0) toast('📲', totalAdded + ' registro(s) nuevo(s) recibido(s)');
+      }
+    } else if (!silent) {
+      // Fallback: intentar fetchAll completo si fetchBatch no devolvió nada
+      showSyncStatus('⚠️ Lotes vacíos. Intentando descarga completa...', 'info');
+      try {
+        const data = await gasGet(url, { action: 'fetchAll' });
+        if (data && data.status === 'ok' && Array.isArray(data.guias) && data.guias.length > 0) {
+          if (data.lastTs) _lastServerTs = data.lastTs;
+          mergeGuiasRemotas(data.guias, data.deletedIds || []);
+          refrescarVistas();
+          setSyncStatus('ok');
+          showSyncStatus('✅ ' + data.guias.length + ' registros descargados', 'ok');
+        } else {
+          setSyncStatus('error');
+          showSyncStatus('⚠️ El Sheet no devolvió datos. Verifica la URL e intenta de nuevo.', 'err');
         }
+      } catch(e2) {
+        setSyncStatus('error');
+        showSyncStatus('❌ Error en descarga completa: ' + e2.message, 'err');
       }
     } else {
-      setSyncStatus('error');
-      if (!silent) showSyncStatus('⚠️ Sin datos. Mensaje: ' + (data && data.message || 'sin respuesta'), 'err');
+      setSyncStatus('ok');
     }
+
   } catch (e) {
     setSyncStatus('error');
     if (!silent) showSyncStatus('❌ Error al descargar: ' + e.message, 'err');
