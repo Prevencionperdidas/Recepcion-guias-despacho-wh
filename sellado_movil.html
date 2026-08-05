@@ -55,9 +55,9 @@
     .setup-sub{font-size:13px;color:var(--text2);margin-bottom:28px;line-height:1.5}
     .setup-input{
       width:100%;background:#fff;border:2px solid var(--border);border-radius:12px;
-      padding:14px 16px;font-size:13px;font-family:'Space Mono',monospace;
+      padding:14px 16px;font-size:12px;font-family:'Space Mono',monospace;
       color:var(--text);outline:none;margin-bottom:14px;
-      text-transform:uppercase;
+      text-transform:none;
     }
     .setup-input:focus{border-color:var(--blue)}
     .btn-setup{
@@ -252,7 +252,7 @@
   <div class="setup-icon">⚙️</div>
   <div class="setup-title">Conectar a Google Sheets</div>
   <div class="setup-sub">Ingresa la URL de tu Apps Script para sincronizar en tiempo real con la app de escritorio</div>
-  <input class="setup-input" type="url" id="sheet-url-input" placeholder="https://script.google.com/macros/s/.../exec" autocomplete="off" autocorrect="off" autocapitalize="off"/>
+  <input class="setup-input" type="url" id="sheet-url-input" placeholder="https://script.google.com/macros/s/.../exec" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" style="text-transform:none"/>
   <button class="btn-setup" onclick="conectar()">🔗 Conectar</button>
   <div id="setup-error"></div>
 </div>
