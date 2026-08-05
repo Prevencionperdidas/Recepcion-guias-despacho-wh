@@ -94,6 +94,8 @@
     .field { display: flex; flex-direction: column; gap: 6px; }
     .field label { font-family: var(--mono); font-size: 10px; color: var(--text); letter-spacing: 1.5px; text-transform: uppercase; font-weight: 700; }
     .field input, .field select, .field textarea { background: #f0f5fb; border: 2px solid var(--border); border-radius: 8px; padding: 10px 14px; color: var(--text); font-family: var(--sans); font-size: 14px; transition: all 0.2s; outline: none; font-weight: 600; text-transform: uppercase; }
+    /* Campos de URL y datos técnicos — NO convertir a mayúsculas */
+    #sync-url, .no-upper { text-transform: none !important; font-family: var(--mono); font-size: 12px; }
     .field input::placeholder, .field textarea::placeholder { color: #8a97ab; font-weight: 400; text-transform: none; }
     .field input:focus, .field select:focus, .field textarea:focus { border-color: var(--ikea-blue); background: #fff; box-shadow: 0 0 0 4px rgba(0,88,163,0.12); }
     .field select option { background: #fff; color: var(--text); }
@@ -842,7 +844,7 @@
 
       <div class="field" style="margin-bottom:16px">
         <label>URL del Web App (Apps Script)</label>
-        <input type="text" id="sync-url" placeholder="https://script.google.com/macros/s/XXXXX/exec" />
+        <input type="url" id="sync-url" placeholder="https://script.google.com/macros/s/XXXXX/exec" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" style="text-transform:none;font-family:var(--mono);font-size:12px" />
       </div>
 
       <div id="sync-status-box" style="display:none;border-radius:10px;padding:12px 14px;margin-bottom:16px;font-size:12px"></div>
@@ -1071,6 +1073,12 @@ let _syncQueue = [];
 let _syncing = false;
 
 function getSyncUrl() { return localStorage.getItem(SYNC_URL_KEY) || ''; }
+function setSyncUrl(url) {
+  // Solo limpiar espacios — NUNCA convertir a minúsculas ni mayúsculas
+  // Las URLs de Apps Script son sensibles a mayúsculas en el ID
+  const clean = url ? url.trim() : '';
+  localStorage.setItem(SYNC_URL_KEY, clean);
+}
 function setSyncUrl(url) { localStorage.setItem(SYNC_URL_KEY, url); }
 
 function updateSyncIndicator() {
@@ -1231,60 +1239,70 @@ async function guardarYProbarSync() {
   const url = document.getElementById('sync-url').value.trim();
   if (!url) { showSyncStatus('⚠️ Ingresa una URL válida', 'err'); return; }
   setSyncUrl(url);
-  showSyncStatus('🔄 Probando conexión...', 'info');
+
+  // ── INTENTO 1: fetch directo (más rápido) ───────────────────
+  showSyncStatus('🔄 Conectando — intento 1/2 (fetch directo)...', 'info');
+  let pingOk = false;
+
   try {
-    const ping = await gasGet(url, { action: 'ping' });
-    if (!ping || ping.status !== 'ok') {
-      showSyncStatus('⚠️ El script respondió con error: ' + (ping && ping.message || 'sin respuesta'), 'err');
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 12000);
+    const res = await fetch(url + '?action=ping', { signal: ctrl.signal, redirect: 'follow' });
+    clearTimeout(t);
+    const text = await res.text();
+    if (text && (text.includes('"ok"') || text.includes('status'))) {
+      pingOk = true;
+    }
+  } catch(e1) { /* fetch falló, probar JSONP */ }
+
+  // ── INTENTO 2: JSONP (más compatible con proxies) ────────────
+  if (!pingOk) {
+    showSyncStatus('🔄 Conectando — intento 2/2 (JSONP, hasta 30s)...', 'info');
+    try {
+      const data = await gasCall(url, { action: 'ping' }, 30000);
+      if (data && data.status === 'ok') pingOk = true;
+    } catch(e2) {
+      showSyncStatus('❌ Sin conexión después de 2 intentos. Prueba la URL directamente en el navegador con ?action=ping al final.', 'err');
       return;
     }
-    updateSyncIndicator();
-
-    // ── PASO 1: Descargar primero para ver cuántos registros hay en el Sheet ──
-    showSyncStatus('⬇️ Leyendo registros del Sheet...', 'info');
-    const sheetData = await gasGet(url, { action: 'fetchAll' });
-    const sheetGuias = (sheetData && sheetData.status === 'ok' && Array.isArray(sheetData.guias))
-      ? sheetData.guias : [];
-    const localCount = db.guias.length;
-    const sheetCount = sheetGuias.length;
-
-    if (sheetCount > localCount) {
-      // El Sheet tiene MÁS registros → este dispositivo está desactualizado → descargar
-      showSyncStatus('📲 El Sheet tiene ' + sheetCount + ' registros y este dispositivo tiene ' + localCount + '. Descargando...', 'info');
-      if (sheetData.lastTs) _lastServerTs = sheetData.lastTs;
-      mergeGuiasRemotas(sheetGuias, sheetData.deletedIds || []);
-      refrescarVistas();
-      // Luego subir lo que este dispositivo tenga extra (si hay algo nuevo local)
-      if (db.guias.length > sheetCount) {
-        await new Promise(r => setTimeout(r, 1000));
-        await gasPost(url, { action: 'syncAll', guias: db.guias });
-      }
-      showSyncStatus('✅ Sincronizado — ' + db.guias.length + ' registros en total', 'ok');
-
-    } else if (localCount > sheetCount) {
-      // Este dispositivo tiene MÁS registros → subir al Sheet
-      showSyncStatus('⬆️ Este dispositivo tiene ' + localCount + ' registros. Subiendo al Sheet...', 'info');
-      await gasPost(url, { action: 'syncAll', guias: db.guias });
-      await new Promise(r => setTimeout(r, 1500));
-      // Luego traer lo que el Sheet pueda tener extra de otros dispositivos
-      mergeGuiasRemotas(sheetGuias, (sheetData && sheetData.deletedIds) || []);
-      refrescarVistas();
-      showSyncStatus('✅ Sincronizado — ' + db.guias.length + ' registros en total', 'ok');
-
-    } else {
-      // Mismo número → merge bidireccional
-      showSyncStatus('🔄 Combinando datos (' + localCount + ' registros)...', 'info');
-      if (sheetData.lastTs) _lastServerTs = sheetData.lastTs;
-      mergeGuiasRemotas(sheetGuias, sheetData.deletedIds || []);
-      refrescarVistas();
-      await gasPost(url, { action: 'syncAll', guias: db.guias });
-      showSyncStatus('✅ Sincronizado — ' + db.guias.length + ' registros en total', 'ok');
-    }
-
-    startSyncPolling();
-  } catch (e) {
-    showSyncStatus('❌ Error de conexión: ' + e.message, 'err');
   }
+
+  if (!pingOk) {
+    showSyncStatus('⚠️ El script respondió pero con error. Verifica la implementación.', 'err');
+    return;
+  }
+
+  // ── CONEXIÓN EXITOSA — sincronizar datos ─────────────────────
+  updateSyncIndicator();
+  showSyncStatus('⬇️ Leyendo registros del Sheet...', 'info');
+
+  const sheetData = await gasGet(url, { action: 'fetchAll' }).catch(() => null);
+  const sheetGuias = (sheetData && sheetData.status === 'ok' && Array.isArray(sheetData.guias))
+    ? sheetData.guias : [];
+  const localCount = db.guias.length;
+  const sheetCount = sheetGuias.length;
+
+  if (sheetCount > localCount) {
+    showSyncStatus('📲 Sheet: ' + sheetCount + ' registros · Local: ' + localCount + '. Descargando...', 'info');
+    if (sheetData && sheetData.lastTs) _lastServerTs = sheetData.lastTs;
+    mergeGuiasRemotas(sheetGuias, (sheetData && sheetData.deletedIds) || []);
+    refrescarVistas();
+    if (db.guias.length > sheetCount) await gasPost(url, { action: 'syncAll', guias: db.guias });
+  } else if (localCount > sheetCount) {
+    showSyncStatus('⬆️ Local: ' + localCount + ' registros · Subiendo al Sheet...', 'info');
+    await gasPost(url, { action: 'syncAll', guias: db.guias });
+    await new Promise(r => setTimeout(r, 1500));
+    mergeGuiasRemotas(sheetGuias, (sheetData && sheetData.deletedIds) || []);
+    refrescarVistas();
+  } else {
+    if (sheetData && sheetData.lastTs) _lastServerTs = sheetData.lastTs;
+    mergeGuiasRemotas(sheetGuias, (sheetData && sheetData.deletedIds) || []);
+    refrescarVistas();
+    await gasPost(url, { action: 'syncAll', guias: db.guias });
+  }
+
+  startSyncPolling();
+  showSyncStatus('✅ Conectado — ' + db.guias.length + ' registros · Sync automático cada 5-10s', 'ok');
 }
 
 // ============================================================
