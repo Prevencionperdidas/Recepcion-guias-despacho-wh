@@ -1143,7 +1143,7 @@ function showSyncStatus(msg, type) {
 // ============================================================
 
 function gasCall(url, params, timeoutMs) {
-  timeoutMs = timeoutMs || 20000;
+  timeoutMs = timeoutMs || 30000;
   return new Promise(function(resolve, reject) {
     var cbName = '__gas_' + Date.now() + '_' + Math.random().toString(36).slice(2);
     var qs = Object.keys(params).map(function(k) {
@@ -1155,7 +1155,7 @@ function gasCall(url, params, timeoutMs) {
     var script = document.createElement('script');
     var timer = setTimeout(function() {
       cleanup();
-      reject(new Error('TIMEOUT: Apps Script no respondió en ' + (timeoutMs/1000) + 's. Verifica que la implementación esté activa.'));
+      reject(new Error('TIMEOUT (' + (timeoutMs/1000) + 's): Red lenta o script sin implementar.'));
     }, timeoutMs);
 
     function cleanup() {
@@ -1165,15 +1165,29 @@ function gasCall(url, params, timeoutMs) {
     }
 
     window[cbName] = function(data) { cleanup(); resolve(data); };
-    script.onerror = function() { cleanup(); reject(new Error('Error de red al contactar Apps Script.')); };
+    script.onerror = function() { cleanup(); reject(new Error('Error de red.')); };
     script.src = url + '?' + qs;
     document.head.appendChild(script);
   });
 }
 
-// Lectura liviana (ping, getLastTs) — timeout corto
-function gasGet(url, params) {
-  return gasCall(url, params, 12000);
+// Lectura con reintentos automáticos — fundamental para redes corporativas lentas
+async function gasGet(url, params) {
+  const INTENTOS = 2;
+  const TIMEOUTS = [20000, 30000]; // primer intento 20s, segundo 30s
+  let lastError;
+  for (let i = 0; i < INTENTOS; i++) {
+    try {
+      return await gasCall(url, params, TIMEOUTS[i]);
+    } catch(e) {
+      lastError = e;
+      if (i < INTENTOS - 1) {
+        // Esperar 1 segundo antes de reintentar
+        await new Promise(r => setTimeout(r, 1000));
+      }
+    }
+  }
+  throw lastError;
 }
 
 // Escritura de datos — usa POST real (FormData) para evitar límite de URL
