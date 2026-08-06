@@ -1067,6 +1067,25 @@ function saveDB(db) { localStorage.setItem(DB_KEY, JSON.stringify(db)); }
 let db = loadDB();
 
 // ============================================================
+// LISTA LOCAL DE ELIMINADOS — evita que el merge restaure borrados
+// ============================================================
+const DELETED_KEY = 'despacho_deleted_ids';
+
+function registrarEliminadoLocal(id) {
+  try {
+    const lista = JSON.parse(localStorage.getItem(DELETED_KEY) || '[]');
+    if (!lista.includes(id)) {
+      lista.push(id);
+      localStorage.setItem(DELETED_KEY, JSON.stringify(lista));
+    }
+  } catch(e) {}
+}
+
+function getEliminadosLocales() {
+  try { return JSON.parse(localStorage.getItem(DELETED_KEY) || '[]'); } catch(e) { return []; }
+}
+
+// ============================================================
 // GOOGLE SHEETS SYNC ENGINE
 // ============================================================
 const SYNC_URL_KEY = 'despacho_sync_url';
