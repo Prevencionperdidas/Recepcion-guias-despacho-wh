@@ -1541,23 +1541,21 @@ function mergeGuiasRemotas(remotas, deletedIds) {
 }
 
 function refrescarVistas() {
-  // Activos: SIEMPRE se actualiza en segundo plano independiente de qué página esté visible
-  // Esto garantiza que al cambiar a la pestaña Activos, la info ya esté fresca
-  renderActivos();
+  // Solo actualizar la vista ACTIVA — evita procesar 551 registros innecesariamente
   renderTablaHoy();
-
-  // Actualizar la página visible también
-  if (document.getElementById('page-activos').classList.contains('active')) {
-    // ya se renderizó arriba
-  }
-  if (document.getElementById('page-dashboard').classList.contains('active')) renderDashboard();
-  if (document.getElementById('page-errores').classList.contains('active')) renderErrores();
-
-  // Actualizar el badge de alertas SLA con la nueva data
-  checkSLAAlerts();
-
-  // Mostrar badge en pestaña Activos con el número de guías activas actuales
   actualizarBadgeActivos();
+
+  const pActivos   = document.getElementById('page-activos').classList.contains('active');
+  const pDashboard = document.getElementById('page-dashboard').classList.contains('active');
+  const pErrores   = document.getElementById('page-errores').classList.contains('active');
+
+  if (pActivos)   renderActivos();
+  if (pDashboard) renderDashboard();
+  if (pErrores)   renderErrores();
+
+  // Si no hay ninguna pestaña activa visible, al menos actualizar activos en memoria
+  // pero NO renderizar el DOM (es costoso con 551+ registros)
+  checkSLAAlerts();
 }
 
 function actualizarBadgeActivos() {
@@ -1745,8 +1743,8 @@ function getActivasCount() {
 
 // Intervalo adaptativo: más frecuente cuando hay guías activas
 function getPollInterval() {
-  if (_consecutiveFails >= 3) return 30000; // si hay errores, esperar más
-  return getActivasCount() > 0 ? 5000 : 10000;
+  if (_consecutiveFails >= 3) return 45000;
+  return getActivasCount() > 0 ? 10000 : 20000; // 10s con activas, 20s en reposo
 }
 
 function startSyncPolling() {
@@ -1928,7 +1926,7 @@ function updateClock() {
   document.getElementById('clock-time').textContent = n.toLocaleTimeString('es-CL');
   document.getElementById('clock-date').textContent = n.toLocaleDateString('es-CL', {weekday:'short',day:'numeric',month:'short'});
 }
-setInterval(updateClock, 1000); updateClock();
+setInterval(updateClock, 30000); updateClock();
 setInterval(updateSyncIndicator, 60000); // actualiza el "hace Xm" cada minuto
 
 // ============================================================
@@ -2546,11 +2544,35 @@ function renderDashboard() {
   renderTablaHistorial(data);
 }
 
+const TABLA_PAGE_SIZE = 100;
+let _tablaPage = 0;
+
 function renderTablaHistorial(data) {
   const sorted=[...data].reverse();
   const tbody=document.getElementById('tabla-historial');
   if (!sorted.length) { tbody.innerHTML=`<tr><td colspan="12"><div class="empty-state"><div class="empty-icon">📊</div><h3>Sin datos</h3></div></td></tr>`; return; }
-  tbody.innerHTML=sorted.map(g=>{
+
+  // Paginar — renderizar solo 100 filas a la vez
+  const totalPages = Math.ceil(sorted.length / TABLA_PAGE_SIZE);
+  if (_tablaPage >= totalPages) _tablaPage = 0;
+  const pageData = sorted.slice(_tablaPage * TABLA_PAGE_SIZE, (_tablaPage + 1) * TABLA_PAGE_SIZE);
+
+  // Paginador
+  let pager = document.getElementById('tabla-pager');
+  if (totalPages > 1) {
+    if (!pager) {
+      pager = document.createElement('div');
+      pager.id = 'tabla-pager';
+      pager.style.cssText = 'display:flex;align-items:center;justify-content:center;gap:10px;padding:10px 16px;background:#eef3fa;border-top:2px solid var(--border)';
+      tbody.parentElement.parentElement.appendChild(pager);
+    }
+    pager.innerHTML = `
+      <button onclick="_tablaPage=Math.max(0,_tablaPage-1);renderTablaHistorial(getFiltered())" style="padding:6px 14px;border-radius:8px;border:2px solid var(--ikea-blue);background:#fff;color:var(--ikea-blue);font-weight:700;cursor:pointer;font-family:var(--sans)">◀ Anterior</button>
+      <span style="font-family:var(--mono);font-size:11px;color:var(--text2)">Pág ${_tablaPage+1} / ${totalPages} &nbsp;·&nbsp; ${sorted.length} registros</span>
+      <button onclick="_tablaPage=Math.min(${totalPages}-1,_tablaPage+1);renderTablaHistorial(getFiltered())" style="padding:6px 14px;border-radius:8px;border:2px solid var(--ikea-blue);background:#fff;color:var(--ikea-blue);font-weight:700;cursor:pointer;font-family:var(--sans)">Siguiente ▶</button>`;
+  } else if (pager) { pager.remove(); }
+
+  tbody.innerHTML=pageData.map(g=>{
     try {
     const finalizada = g.t_sellado || g.cerrada;
     const tFin = g.t_sellado || g.t_cierre;
@@ -2975,7 +2997,7 @@ function playSLABeep(overdue) {
 }
 
 // Run every second for live countdown
-setInterval(checkSLAAlerts, 1000);
+setInterval(checkSLAAlerts, 15000); checkSLAAlerts();
 
 // ============================================================
 // DELETE RECORD — PIN 2114
