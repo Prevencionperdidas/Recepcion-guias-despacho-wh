@@ -593,7 +593,8 @@
     <div class="table-wrap">
       <div class="table-header">
         <div class="table-header-title">Historial Completo</div>
-        <div style="display:flex;gap:8px">
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button id="btn-historico" class="btn btn-ghost btn-sm" onclick="toggleHistorico()" style="border-color:rgba(255,255,255,0.4)">📂 Historial completo</button>
           <button class="btn btn-ghost btn-sm" onclick="sincronizarTodoAhora()">☁️ Sync Sheets</button>
           <button class="btn btn-ghost btn-sm" onclick="exportarCSV()">⬇ Exportar CSV</button>
         </div>
@@ -1052,8 +1053,32 @@ const DB_KEY = 'despacho_ctrl_v3';
 function loadDB() {
   try {
     const raw = localStorage.getItem(DB_KEY);
-    if (raw) return JSON.parse(raw);
-    // Migrate from v2
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      // Migración automática: separar recientes de histórico para mejorar rendimiento
+      if (parsed.guias && parsed.guias.length > 200) {
+        const DIAS_RECIENTES = 30;
+        const corte = new Date();
+        corte.setDate(corte.getDate() - DIAS_RECIENTES);
+        const recientes = parsed.guias.filter(g => {
+          const activa = !g.t_sellado && !g.cerrada;
+          const fecha = new Date(g.t_recepcion || g.fecha || '2000-01-01');
+          return activa || fecha >= corte;
+        });
+        const historico = parsed.guias.filter(g => {
+          const activa = !g.t_sellado && !g.cerrada;
+          const fecha = new Date(g.t_recepcion || g.fecha || '2000-01-01');
+          return !activa && fecha < corte;
+        });
+        // Guardar histórico en clave separada (no se carga al inicio)
+        if (historico.length > 0) {
+          localStorage.setItem(DB_KEY + '_historico', JSON.stringify(historico));
+        }
+        parsed.guias = recientes;
+        localStorage.setItem(DB_KEY, JSON.stringify(parsed));
+      }
+      return parsed;
+    }
     const old = localStorage.getItem('despacho_ctrl_v2');
     if (old) {
       const o = JSON.parse(old);
@@ -1063,7 +1088,40 @@ function loadDB() {
     return { guias: [] };
   } catch { return { guias: [] }; }
 }
-function saveDB(db) { localStorage.setItem(DB_KEY, JSON.stringify(db)); }
+
+function saveDB(db) {
+  try {
+    localStorage.setItem(DB_KEY, JSON.stringify(db));
+  } catch(e) {
+    // Si localStorage está lleno, mover registros viejos al histórico
+    if (e.name === 'QuotaExceededError') {
+      const corte = new Date();
+      corte.setDate(corte.getDate() - 30);
+      const historico = JSON.parse(localStorage.getItem(DB_KEY + '_historico') || '[]');
+      const viejos = db.guias.filter(g => {
+        const fecha = new Date(g.t_recepcion || '2000-01-01');
+        return (g.t_sellado || g.cerrada) && fecha < corte;
+      });
+      historico.push(...viejos);
+      localStorage.setItem(DB_KEY + '_historico', JSON.stringify(historico));
+      db.guias = db.guias.filter(g => !viejos.includes(g));
+      localStorage.setItem(DB_KEY, JSON.stringify(db));
+    }
+  }
+}
+
+// Carga el histórico solo cuando se necesita (botón "Ver historial completo")
+function getHistoricoLocal() {
+  try {
+    return JSON.parse(localStorage.getItem(DB_KEY + '_historico') || '[]');
+  } catch { return []; }
+}
+
+// Todos los registros = recientes + histórico (solo cuando se pide explícitamente)
+function getAllGuias() {
+  return [...db.guias, ...getHistoricoLocal()];
+}
+
 let db = loadDB();
 
 // ============================================================
@@ -2449,16 +2507,32 @@ document.getElementById('modal-err-sell').addEventListener('click', e => { if(e.
 // ============================================================
 // DASHBOARD
 // ============================================================
+let _mostrarHistoricoCompleto = false; // toggle para ver datos de más de 30 días
+
 function getFiltered() {
   const desde = document.getElementById('f-desde').value;
   const hasta = document.getElementById('f-hasta').value;
   const origen = document.getElementById('f-origen-dash').value;
-  return db.guias.filter(g => {
+
+  // Fuente de datos: recientes siempre + histórico solo si el usuario lo pide
+  const fuente = _mostrarHistoricoCompleto ? getAllGuias() : db.guias;
+
+  return fuente.filter(g => {
     if (desde && g.fecha < desde) return false;
     if (hasta && g.fecha > hasta) return false;
     if (origen && g.origen !== origen) return false;
     return true;
   });
+}
+
+function toggleHistorico() {
+  _mostrarHistoricoCompleto = !_mostrarHistoricoCompleto;
+  const btn = document.getElementById('btn-historico');
+  if (btn) {
+    btn.textContent = _mostrarHistoricoCompleto ? '📅 Solo últimos 30 días' : '📂 Ver historial completo';
+    btn.style.background = _mostrarHistoricoCompleto ? 'var(--warn)' : '';
+  }
+  renderDashboard();
 }
 // resetFiltros — definida más abajo con PIN de seguridad
 
