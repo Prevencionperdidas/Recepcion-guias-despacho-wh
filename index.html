@@ -1239,19 +1239,36 @@ function gasCall(url, params, timeoutMs) {
     }).join('&') + '&callback=' + cbName;
 
     var script = document.createElement('script');
+    var settled = false;
+
     var timer = setTimeout(function() {
-      cleanup();
-      reject(new Error('TIMEOUT (' + (timeoutMs/1000) + 's): Red lenta o script sin implementar.'));
+      if (settled) return;
+      settled = true;
+      // NO eliminar window[cbName] aún — la respuesta puede llegar tarde
+      // Solo rechazar la promesa pero dejar el callback por si acaso
+      if (script.parentNode) script.parentNode.removeChild(script);
+      // Limpiar después de 10s extra por si la respuesta llega tarde
+      setTimeout(function() { delete window[cbName]; }, 10000);
+      reject(new Error('TIMEOUT (' + (timeoutMs/1000) + 's)'));
     }, timeoutMs);
 
-    function cleanup() {
+    window[cbName] = function(data) {
+      if (settled) return; // respuesta tardía después del timeout — ignorar
+      settled = true;
       clearTimeout(timer);
       delete window[cbName];
       if (script.parentNode) script.parentNode.removeChild(script);
-    }
+      resolve(data);
+    };
 
-    window[cbName] = function(data) { cleanup(); resolve(data); };
-    script.onerror = function() { cleanup(); reject(new Error('Error de red.')); };
+    script.onerror = function() {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      delete window[cbName];
+      reject(new Error('Error de red al contactar Apps Script'));
+    };
+
     script.src = url + '?' + qs;
     document.head.appendChild(script);
   });
