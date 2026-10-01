@@ -1495,22 +1495,24 @@ async function sincronizarTodoAhora(silent) {
   const url = getSyncUrl();
   if (!url) { if (!silent) toast('⚠️', 'Primero conecta tu Google Sheet'); return; }
 
-  // ── PROTECCIÓN CRÍTICA: nunca subir si no hay registros locales ──────────
-  // Subir 0 registros borraría todo lo que está en el Sheet
-  if (db.guias.length === 0) {
-    if (!silent) showSyncStatus('⚠️ No hay registros locales para subir. Usa "Descargar de Sheets" primero.', 'err');
-    toast('⚠️', 'Sin datos locales — no se sube nada al Sheet');
+  // Usar TODOS los registros (recientes + histórico)
+  const todosLosRegistros = getAllGuias();
+
+  // Protección: nunca subir si no hay nada
+  if (todosLosRegistros.length === 0) {
+    if (!silent) showSyncStatus('⚠️ No hay registros locales para subir. Descarga del Sheet primero.', 'err');
+    toast('⚠️', 'Sin datos locales — no se sube nada');
     return;
   }
 
-  if (!silent) showSyncStatus('⬆️ Subiendo ' + db.guias.length + ' registros a Google Sheets...', 'info');
+  if (!silent) showSyncStatus('⬆️ Subiendo ' + todosLosRegistros.length + ' registros a Google Sheets...', 'info');
   try {
-    await gasPost(url, { action: 'syncAll', guias: db.guias });
-    if (!silent) showSyncStatus('✅ ' + db.guias.length + ' registros enviados a Google Sheets', 'ok');
-    toast('☁️', db.guias.length + ' registros enviados a Google Sheets');
+    await gasPost(url, { action: 'syncAll', guias: todosLosRegistros });
+    if (!silent) showSyncStatus('✅ ' + todosLosRegistros.length + ' registros enviados a Google Sheets', 'ok');
+    toast('☁️', todosLosRegistros.length + ' registros enviados');
     updateSyncIndicator();
   } catch (e) {
-    if (!silent) showSyncStatus('❌ Error al subir datos. Intenta de nuevo.', 'err');
+    if (!silent) showSyncStatus('❌ Error al subir: ' + e.message, 'err');
   }
 }
 
@@ -1565,7 +1567,12 @@ function mergeGuiasRemotas(remotas, deletedIds) {
 
     const local = localById[rgId];
     if (!local) {
-      // Guía nueva desde otro dispositivo → agregar
+      // Verificar si está en el histórico local
+      const historico = getHistoricoLocal();
+      const enHistorico = historico.find(h => String(h.id) === rgId);
+      if (enHistorico) return; // ya existe en histórico, no duplicar
+
+      // Guía nueva desde otro dispositivo → agregar a db.guias
       if (!rg.log) rg.log = [];
       if (!rg.errores_revision) rg.errores_revision = [];
       if (!rg.errores_sellado) rg.errores_sellado = [];
