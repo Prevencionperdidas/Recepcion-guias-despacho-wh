@@ -1059,45 +1059,57 @@ async function conectar() {
   }
 }
 
-// DESCARGAR — por lotes de 50
+// DESCARGAR — intenta fetchAllFast primero (1 sola llamada),
+// si da timeout por red lenta cae a lotes de 100
 async function descargar(silent=true) {
   const url=getUrl();
   if (!url) return;
   setSyncDot('sync');
-  try {
-    // Paso 1: cuántos hay
-    const cnt=await gasCall(url,{action:'fetchCount'},15000);
-    const total=(cnt&&cnt.count)||0;
-    const deletedRemote=(cnt&&cnt.deletedIds)||[];
-    if(cnt&&cnt.lastTs) _lastTs=cnt.lastTs;
-    if (!silent) showStatus('⬇️ Descargando '+total+' registros en lotes de 50...','info');
+  if (!silent) showStatus('⬇️ Descargando datos del Sheet...','info');
 
-    // Paso 2: descargar por lotes
-    const LOTE=50;
+  // ── INTENTO 1: fetchAllFast (todo en una llamada, ~5-8s) ────────────────
+  try {
+    const r = await gasCall(url, {action:'fetchAllFast'}, 30000);
+    if (r && r.status==='ok' && Array.isArray(r.guias)) {
+      if (r.lastTs) _lastTs = r.lastTs;
+      merge(r.guias, r.deletedIds||[]);
+      setSyncDot('ok');
+      if (!silent) showStatus('✅ '+r.guias.length+' registros descargados','ok');
+      renderAll();
+      return;
+    }
+  } catch(e) {
+    if (!silent) showStatus('⬇️ Descarga rápida tardó mucho, usando lotes...','info');
+  }
+
+  // ── INTENTO 2: por lotes de 100 (para redes muy lentas) ─────────────────
+  try {
+    const cnt = await gasCall(url, {action:'fetchCount'}, 12000);
+    const total = (cnt&&cnt.count)||0;
+    const deletedRemote = (cnt&&cnt.deletedIds)||[];
+    if (cnt&&cnt.lastTs) _lastTs = cnt.lastTs;
+    if (!silent) showStatus('⬇️ Descargando '+total+' registros en lotes...','info');
+
     const remotas=[];
     let offset=0;
     while (offset < total) {
       try {
-        const batch=await gasCall(url,{action:'fetchBatch',offset,limit:LOTE},20000);
+        const batch = await gasCall(url, {action:'fetchBatch',offset,limit:100}, 25000);
         if (batch&&batch.status==='ok'&&Array.isArray(batch.guias)) {
           remotas.push(...batch.guias);
-          if (!silent) showStatus('⬇️ '+remotas.length+'/'+total+' registros...','info');
-          if (batch.guias.length<LOTE) break;
+          if (!silent) showStatus('⬇️ '+remotas.length+'/'+total+'...','info');
+          if (batch.guias.length < 100) break;
         } else break;
-      } catch(_) { await new Promise(r=>setTimeout(r,2000)); }
-      offset+=LOTE;
+      } catch(_) { await new Promise(r=>setTimeout(r,1500)); }
+      offset += 100;
     }
-
-    // Paso 3: merge
-    if (remotas.length>0||deletedRemote.length>0) {
-      merge(remotas, deletedRemote);
-    }
+    merge(remotas, deletedRemote);
     setSyncDot('ok');
     if (!silent) showStatus('✅ '+remotas.length+' registros descargados','ok');
     renderAll();
   } catch(e) {
     setSyncDot('err');
-    if (!silent) showStatus('❌ '+e.message,'err');
+    if (!silent) showStatus('❌ Error: '+e.message,'err');
   }
 }
 
