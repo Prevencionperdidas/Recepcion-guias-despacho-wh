@@ -319,27 +319,43 @@
 <!-- ===== DASHBOARD ===== -->
 <div class="page" id="page-dashboard">
   <div class="stats" id="stats-grid"></div>
-  <div class="table-wrap">
-    <div class="table-header">
-      <div class="table-header-title">📋 Historial Completo</div>
-      <div style="display:flex;gap:8px">
-        <button class="btn btn-ghost btn-sm" onclick="exportCSV()">⬇ CSV</button>
-      </div>
+  <div class="charts-row" id="charts-row"></div>
+  <div class="filter-bar">
+    <div class="field"><label>Desde</label><input type="date" id="f-desde" oninput="renderDashboard()"/></div>
+    <div class="field"><label>Hasta</label><input type="date" id="f-hasta" oninput="renderDashboard()"/></div>
+    <div class="field"><label>Origen</label>
+      <select id="f-origen" onchange="renderDashboard()">
+        <option value="">Todos</option>
+        <option>Tienda</option><option>Outbound</option><option>Vacío</option>
+      </select>
     </div>
-    <table>
+    <div class="field" style="flex:0"><label>&nbsp;</label>
+      <button class="btn btn-ghost" onclick="resetFiltros()">↺ Limpiar</button>
+    </div>
+  </div>
+  <div class="dash-section">
+    <span style="font-size:20px">📋</span>
+    <div class="dash-section-title">Historial Completo</div>
+    <span class="dash-section-badge" id="hist-count">0</span>
+    <div style="margin-left:auto">
+      <button class="btn btn-ghost btn-sm" onclick="exportCSV()">⬇ CSV</button>
+    </div>
+  </div>
+  <div class="table-wrap">
+    <table style="table-layout:fixed;width:100%">
       <thead><tr>
-        <th style="width:75px">Fecha</th>
-        <th style="width:100px">N° Guía</th>
-        <th style="width:75px">Patente</th>
-        <th style="width:65px">Origen</th>
-        <th style="width:85px">Destino</th>
-        <th style="width:100px">Prevencionista</th>
-        <th style="width:65px">T.Rev</th>
-        <th style="width:65px">T.Prev</th>
-        <th style="width:65px">T.Sell</th>
-        <th style="width:70px">T.Total</th>
+        <th style="width:72px">Fecha</th>
+        <th style="width:105px">N° Guía</th>
+        <th style="width:72px">Patente</th>
+        <th style="width:62px">Origen</th>
+        <th style="width:88px">Destino</th>
+        <th style="width:105px">Prevencionista</th>
+        <th style="width:60px">T.Rev</th>
+        <th style="width:60px">T.Prev</th>
+        <th style="width:60px">T.Sell</th>
+        <th style="width:68px">T.Total</th>
         <th style="width:80px">Estado</th>
-        <th style="width:80px;background:rgba(200,32,42,0.85);color:#fff">🗑 Elim.</th>
+        <th style="width:60px;background:rgba(200,32,42,0.85);color:#fff;text-align:center">🗑</th>
       </tr></thead>
       <tbody id="tbody-hist"></tbody>
     </table>
@@ -807,83 +823,126 @@ document.getElementById('modal-guia').addEventListener('click', e=>{
 let _histPage = 0;
 const HIST_SIZE = 100;
 
+function getFiltered() {
+  const desde  = (document.getElementById('f-desde')||{}).value||'';
+  const hasta  = (document.getElementById('f-hasta')||{}).value||'';
+  const origen = (document.getElementById('f-origen')||{}).value||'';
+  return DB.guias.filter(g=>{
+    if (desde && g.fecha < desde) return false;
+    if (hasta && g.fecha > hasta) return false;
+    if (origen && g.origen !== origen) return false;
+    return true;
+  });
+}
+
+function resetFiltros() {
+  const fd=document.getElementById('f-desde'); if(fd) fd.value='';
+  const fh=document.getElementById('f-hasta'); if(fh) fh.value=hoy();
+  const fo=document.getElementById('f-origen'); if(fo) fo.value='';
+  renderDashboard();
+}
+
+function barChart(data, color) {
+  const max=Math.max(...Object.values(data),1);
+  return Object.entries(data).sort((a,b)=>b[1]-a[1]).slice(0,8).map(([k,v])=>
+    `<div class="bar-row">
+      <div class="bar-label" title="${k}">${k.length>18?k.slice(0,18)+'…':k}</div>
+      <div class="bar-track"><div class="bar-fill" style="width:${v/max*100}%;background:${color}"></div></div>
+      <div class="bar-val">${v}</div>
+    </div>`).join('');
+}
+
 function renderDashboard() {
-  const all = DB.guias;
-  const selladas = all.filter(g=>g.t_sellado);
-  const activas  = all.filter(g=>!g.t_sellado&&!g.cerrada);
-  const devueltas = all.filter(g=>g.cerrada);
-  const errRev  = all.reduce((a,g)=>a+(g.errores_revision||[]).length,0);
-  const errSell = all.reduce((a,g)=>a+(g.errores_sellado||[]).length,0);
+  const data = getFiltered();
+  const selladas  = data.filter(g=>g.t_sellado&&!g.cerrada);
+  const activas   = data.filter(g=>!g.t_sellado&&!g.cerrada);
+  const devueltas = data.filter(g=>g.cerrada);
+  const errRev    = data.reduce((a,g)=>a+(g.errores_revision||[]).length,0);
+  const errSell   = data.reduce((a,g)=>a+(g.errores_sellado||[]).length,0);
+  const tiempos   = selladas.map(g=>elapsed(g.t_recepcion,g.t_sellado)).filter(Boolean);
+  const promMs    = tiempos.length?tiempos.reduce((a,b)=>a+b,0)/tiempos.length:0;
 
-  // Tiempos promedio
-  const tiempos = selladas.map(g=>elapsed(g.t_recepcion,g.t_sellado)).filter(Boolean);
-  const promMs  = tiempos.length ? tiempos.reduce((a,b)=>a+b,0)/tiempos.length : 0;
-
+  // KPIs
   document.getElementById('stats-grid').innerHTML = `
-    <div class="stat c1"><div class="stat-label">Total Guías</div><div class="stat-val">${all.length}</div><div class="stat-sub">en el período</div></div>
-    <div class="stat c2"><div class="stat-label">Selladas</div><div class="stat-val">${selladas.length}</div><div class="stat-sub">${all.length?Math.round(selladas.length/all.length*100):0}% completadas</div></div>
-    <div class="stat c3"><div class="stat-label">En Proceso</div><div class="stat-val">${activas.length}</div><div class="stat-sub">guías activas</div></div>
-    <div class="stat c4"><div class="stat-label">T. Promedio</div><div class="stat-val" style="font-size:28px">${fmtElapsed(promMs)}</div><div class="stat-sub">SLA: 15 min</div></div>
+    <div class="stat c1"><div class="stat-label">Total Guías</div><div class="stat-val">${data.length}</div><div class="stat-sub">en el período</div></div>
+    <div class="stat c2"><div class="stat-label">Selladas</div><div class="stat-val">${selladas.length}</div><div class="stat-sub">${data.length?Math.round(selladas.length/data.length*100):0}% completadas</div></div>
+    <div class="stat c3"><div class="stat-label">En Proceso</div><div class="stat-val">${activas.length}</div><div class="stat-sub">activas ahora</div></div>
+    <div class="stat c4"><div class="stat-label">T. Promedio</div><div class="stat-val" style="font-size:26px">${fmtElapsed(promMs)}</div><div class="stat-sub">SLA: 15 min</div></div>
     <div class="stat c5"><div class="stat-label">Err. Revisión</div><div class="stat-val">${errRev}</div><div class="stat-sub">devoluciones</div></div>
     <div class="stat c6"><div class="stat-label">Discrepancias</div><div class="stat-val">${errSell}</div><div class="stat-sub">en sellado</div></div>`;
 
-  renderHistorial();
+  // Gráficos
+  const byPrev={}, byOrigen={};
+  data.forEach(g=>{
+    if(g.t_sellado) byPrev[g.receptor]=(byPrev[g.receptor]||0)+1;
+    byOrigen[g.origen]=(byOrigen[g.origen]||0)+1;
+  });
+  document.getElementById('charts-row').innerHTML = `
+    <div class="chart-card">
+      <div class="chart-title">👤 Guías Selladas por Prevencionista</div>
+      ${barChart(byPrev,'linear-gradient(90deg,var(--blue-dk),var(--blue))')||'<div style="color:var(--text2);font-size:12px;text-align:center;padding:20px">Sin datos</div>'}
+    </div>
+    <div class="chart-card">
+      <div class="chart-title">📦 Guías por Origen</div>
+      ${barChart(byOrigen,'linear-gradient(90deg,var(--yellow-dk),var(--yellow))')||'<div style="color:var(--text2);font-size:12px;text-align:center;padding:20px">Sin datos</div>'}
+    </div>`;
+
+  renderHistorial(data);
 }
 
-function renderHistorial() {
-  const sorted = [...DB.guias].sort((a,b)=>new Date(b.t_recepcion)-new Date(a.t_recepcion));
+function renderHistorial(data) {
+  if (!data) data = getFiltered();
+  const sorted = [...data].sort((a,b)=>new Date(b.t_recepcion)-new Date(a.t_recepcion));
+  const cntEl = document.getElementById('hist-count');
+  if (cntEl) cntEl.textContent = sorted.length;
   const tbody = document.getElementById('tbody-hist');
   if (!sorted.length) {
-    tbody.innerHTML = '<tr><td colspan="12"><div class="empty"><div class="empty-icon">📊</div><h3>Sin datos</h3></div></td></tr>';
+    tbody.innerHTML='<tr><td colspan="12"><div class="empty"><div class="empty-icon">📊</div><h3>Sin datos</h3></div></td></tr>';
+    document.getElementById('hist-pager').style.display='none';
     return;
   }
-  const totalPags = Math.ceil(sorted.length/HIST_SIZE);
-  if (_histPage >= totalPags) _histPage = 0;
-  const datos = sorted.slice(_histPage*HIST_SIZE, (_histPage+1)*HIST_SIZE);
+  const totalPags=Math.ceil(sorted.length/HIST_SIZE);
+  if (_histPage>=totalPags) _histPage=0;
+  const datos=sorted.slice(_histPage*HIST_SIZE,(_histPage+1)*HIST_SIZE);
 
-  tbody.innerHTML = datos.map(g => {
-    const safeId  = String(g.id||'').replace(/"/g,'');
-    const safeGui = String(g.guia||'');
-    const estado  = g.t_sellado && !g.cerrada ? '<span class="badge badge-ok">SELLADO</span>'
-      : g.cerrada ? '<span class="badge badge-rev">DEVUELTA</span>'
-      : '<span class="badge badge-act">ACTIVO</span>';
-    const f1 = g.t_revision  ? fmtElapsed(elapsed(g.t_recepcion,g.t_revision))  : '—';
-    const f2 = g.t_prevencion? fmtElapsed(elapsed(g.t_revision,g.t_prevencion)) : '—';
-    const f3 = g.t_sellado   ? fmtElapsed(elapsed(g.t_prevencion,g.t_sellado))  : '—';
-    const tot= g.t_sellado||g.cerrada ? fmtElapsed(elapsed(g.t_recepcion,g.t_sellado||g.t_cierre)) : '—';
+  tbody.innerHTML=datos.map(g=>{
+    try {
+    const safeId=String(g.id||'').replace(/"/g,'');
+    const safeGui=String(g.guia||'');
+    const estado=g.t_sellado&&!g.cerrada?'<span class="badge badge-ok">● SELLADO</span>'
+      :g.cerrada?'<span class="badge badge-rev">● DEVUELTA</span>'
+      :'<span class="badge badge-act">● ACTIVO</span>';
+    const f1=g.t_revision?fmtElapsed(elapsed(g.t_recepcion,g.t_revision)):'—';
+    const f2=g.t_prevencion?fmtElapsed(elapsed(g.t_revision,g.t_prevencion)):'—';
+    const f3=g.t_sellado?fmtElapsed(elapsed(g.t_prevencion,g.t_sellado)):'—';
+    const tot=g.t_sellado||g.cerrada?fmtElapsed(elapsed(g.t_recepcion,g.t_sellado||g.t_cierre)):'—';
     return `<tr>
       <td style="font-family:var(--mono);font-size:10px">${fmtDate(g.t_recepcion)}</td>
-      <td style="font-family:var(--mono);font-weight:700">${safeGui}</td>
-      <td>${String(g.patente||'')}</td>
-      <td>${String(g.origen||'')}</td>
-      <td>${String(g.destino||'')}</td>
+      <td style="font-family:var(--mono);font-weight:700;word-break:break-all">${safeGui}</td>
+      <td>${String(g.patente||'')}</td><td>${String(g.origen||'')}</td>
+      <td>${String(g.destino||String(g.bultos||''))}</td>
       <td style="font-size:11px">${String(g.receptor||'')}</td>
       <td style="font-family:var(--mono);font-size:10px">${f1}</td>
       <td style="font-family:var(--mono);font-size:10px">${f2}</td>
       <td style="font-family:var(--mono);font-size:10px">${f3}</td>
       <td style="font-family:var(--mono);font-size:10px">${tot}</td>
       <td>${estado}</td>
-      <td style="text-align:center">
-        <button class="btn btn-danger btn-sm" data-id="${safeId}" data-gui="${safeGui}">🗑</button>
-      </td>
+      <td style="text-align:center"><button class="tbl-del-btn" data-id="${safeId}" data-gui="${safeGui}">🗑</button></td>
     </tr>`;
+    } catch(e){ return '<tr><td colspan="12" style="color:var(--red);font-size:10px;padding:6px 12px">⚠ Error en fila</td></tr>'; }
   }).join('');
 
-  // Paginador
-  const pager = document.getElementById('hist-pager');
-  if (totalPags > 1) {
-    pager.style.display = 'block';
-    pager.innerHTML = `
+  const pager=document.getElementById('hist-pager');
+  if (totalPags>1) {
+    pager.style.display='block';
+    pager.innerHTML=`
       <button class="btn btn-ghost btn-sm" onclick="_histPage=Math.max(0,_histPage-1);renderHistorial()">◀ Anterior</button>
-      <span style="font-family:var(--mono);font-size:11px;color:var(--text2);margin:0 12px">
-        Pág ${_histPage+1} / ${totalPags} · ${sorted.length} registros
-      </span>
+      <span style="font-family:var(--mono);font-size:11px;color:var(--text2);margin:0 12px">Pág ${_histPage+1}/${totalPags} · ${sorted.length} registros</span>
       <button class="btn btn-ghost btn-sm" onclick="_histPage=Math.min(${totalPags-1},_histPage+1);renderHistorial()">Siguiente ▶</button>`;
   } else { pager.style.display='none'; }
 
-  // Delegación para botones eliminar
-  tbody.querySelectorAll('button[data-id]').forEach(btn => {
-    btn.onclick = () => pedirPin(btn.getAttribute('data-id'), btn.getAttribute('data-gui'));
+  tbody.querySelectorAll('.tbl-del-btn').forEach(btn=>{
+    btn.onclick=()=>pedirPin(btn.getAttribute('data-id'),btn.getAttribute('data-gui'));
   });
 }
 
