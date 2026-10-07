@@ -214,10 +214,44 @@
     .pin-key:hover{background:var(--blue);color:#fff;border-color:var(--blue)}
     .pin-key:active{transform:scale(0.95)}
 
-    @media(max-width:600px){
+    /* CHARTS */
+    .charts-row{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:20px}
+    .charts-row .chart-card:first-child{grid-column:1/-1}
+    .chart-card{background:#fff;border:2px solid rgba(0,88,163,0.15);border-radius:14px;
+      padding:20px;box-shadow:0 3px 14px rgba(0,58,114,0.1)}
+    .chart-title{font-size:12px;font-weight:800;color:var(--blue);font-family:var(--mono);
+      text-transform:uppercase;letter-spacing:1px;
+      border-bottom:3px solid var(--yellow);padding-bottom:10px;margin-bottom:16px;
+      display:flex;align-items:center;gap:8px}
+    /* FILTROS */
+    .filter-bar{display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;
+      background:var(--bg);border-radius:10px;padding:14px;margin-bottom:20px;
+      border:2px solid var(--border)}
+    .filter-bar .field{flex:1;min-width:130px}
+    /* SECCIÓN */
+    .dash-section{display:flex;align-items:center;gap:10px;margin:24px 0 14px;
+      padding-bottom:10px;border-bottom:4px solid var(--yellow)}
+    .dash-section-title{font-size:17px;font-weight:800;color:var(--blue-dk)}
+    .dash-section-badge{background:rgba(0,88,163,0.1);color:var(--blue);
+      border:1px solid rgba(0,88,163,0.25);border-radius:12px;
+      padding:2px 10px;font-size:11px;font-weight:800;font-family:var(--mono)}
+    /* DELETE BTN */
+    .tbl-del-btn{padding:4px 10px;border-radius:6px;border:none;
+      background:var(--red);color:#fff;font-size:10px;font-weight:700;
+      cursor:pointer;font-family:var(--sans)}
+    .tbl-del-btn:hover{background:#8c0e14}
+    /* URGENTE */
+    .activo-urgente{animation:urgpulse 1.5s ease-in-out infinite alternate}
+    @keyframes urgpulse{from{box-shadow:0 0 0 0 rgba(200,32,42,0.3)}to{box-shadow:0 0 0 8px rgba(200,32,42,0)}}
+
+    @media(max-width:700px){
       .grid,.grid.g3{grid-template-columns:1fr}
       .stats{grid-template-columns:1fr 1fr}
       .fases{flex-wrap:wrap}
+      .charts-row{grid-template-columns:1fr}
+      .charts-row .chart-card:first-child{grid-column:auto}
+      nav{overflow-x:auto}
+      .tab{white-space:nowrap;flex-shrink:0}
     }
   </style>
 </head>
@@ -610,10 +644,14 @@ function buildActivoCard(g) {
 
   let btns = '';
   if (!p1) {
-    btns = `<button class="btn btn-primary btn-sm" onclick="avanzar('${g.id}','revision')">✔ Marcar Revisada</button>
-            <button class="btn btn-ghost btn-sm" onclick="abrirError('${g.id}','revision')">🔴 Error Revisión</button>`;
+    const sellosGuardados = (g.sellos||[]).join(', ');
+    btns = `<button class="btn btn-primary btn-sm" onclick="abrirModalRevision('${g.id}')">✔ Marcar Revisada</button>
+            <button class="btn btn-ghost btn-sm" onclick="abrirError('${g.id}','revision')">🔴 Error Revisión</button>
+            ${sellosGuardados ? `<div style="font-size:10px;color:var(--green);font-family:var(--mono);margin-top:4px">🔖 Sellos: ${sellosGuardados}</div>` : ''}`;
   } else if (!p2) {
-    btns = `<button class="btn btn-warn btn-sm" onclick="avanzar('${g.id}','prevencion')">🔒 Llamar Prevención</button>
+    const sellosRev = (g.sellos||[]).join(', ');
+    btns = `${sellosRev ? `<div style="font-size:10px;color:var(--green);font-family:var(--mono);margin-bottom:6px;padding:6px 10px;background:rgba(26,140,78,0.08);border-radius:6px;border:1px solid rgba(26,140,78,0.2)">🔖 Sellos registrados: <strong>${sellosRev}</strong></div>` : ''}
+            <button class="btn btn-warn btn-sm" onclick="avanzar('${g.id}','prevencion')">🔒 Llamar Prevención</button>
             <button class="btn btn-ghost btn-sm" onclick="avanzar('${g.id}','revision_undo')" style="color:var(--text2)">↺ Deshacer Revisión</button>`;
   } else {
     btns = `<button class="btn btn-success" style="width:100%;font-size:15px" onclick="avanzar('${g.id}','sellado')">🔏 SELLAR CAMIÓN</button>
@@ -673,12 +711,53 @@ function buildActivoCard(g) {
 // ============================================================
 // ACCIONES GUÍAS
 // ============================================================
+function abrirModalRevision(id) {
+  const g = DB.guias.find(x => x.id === id);
+  if (!g) return;
+  const sellosActuales = (g.sellos||[]).join('\n');
+  document.getElementById('modal-guia-titulo').textContent = '✔ Marcar Revisada — N° ' + g.guia;
+  document.getElementById('modal-guia-body').innerHTML = `
+    <p style="font-size:12px;color:var(--text2);margin-bottom:14px">
+      Ingresa los <strong>números de sellos</strong> que corresponden a esta guía.<br>
+      <span style="font-size:11px">Puedes ingresar uno o varios separados por coma o en líneas separadas.</span>
+    </p>
+    <div class="field" style="margin-bottom:8px">
+      <label>🔖 Número(s) de Sello</label>
+      <textarea id="sellos-input" rows="3"
+        style="text-transform:uppercase;font-family:var(--mono);font-size:13px;letter-spacing:1px"
+        placeholder="Ej: A12345, B67890&#10;o uno por línea"
+        oninput="toUpper(this)">${sellosActuales}</textarea>
+    </div>
+    <p style="font-size:10px;color:var(--text2);margin-bottom:16px">
+      Si la guía no tiene sellos, puedes dejar el campo vacío y continuar.
+    </p>
+    <div class="btn-group">
+      <button class="btn btn-primary" onclick="confirmarRevision('${id}')">✔ Confirmar Revisión</button>
+      <button class="btn btn-ghost" onclick="cerrarModalGuia()">Cancelar</button>
+    </div>`;
+  document.getElementById('modal-guia').classList.add('open');
+  setTimeout(() => document.getElementById('sellos-input').focus(), 200);
+}
+
+function confirmarRevision(id) {
+  const g = DB.guias.find(x => x.id === id);
+  if (!g) return;
+  // Parsear los sellos ingresados (separados por coma, punto y coma, o salto de línea)
+  const raw = (document.getElementById('sellos-input').value || '').trim();
+  const sellos = raw
+    ? raw.split(/[,;\n]+/).map(s => s.trim().toUpperCase()).filter(s => s.length > 0)
+    : [];
+  g.sellos = sellos;
+  cerrarModalGuia();
+  avanzar(id, 'revision');
+}
+
 function avanzar(id, accion) {
   const g = DB.guias.find(x => x.id === id);
   if (!g) return;
   const ts = new Date().toISOString();
   if (accion==='revision')      { g.t_revision = ts; }
-  if (accion==='revision_undo') { g.t_revision = null; g.t_prevencion = null; }
+  if (accion==='revision_undo') { g.t_revision = null; g.t_prevencion = null; g.sellos = []; }
   if (accion==='prevencion')    { g.t_prevencion = ts; }
   if (accion==='sellado')       { g.t_sellado = ts; }
   dbSave(DB);
@@ -706,7 +785,7 @@ function registrar() {
     t_revision: null, t_prevencion: null, t_sellado: null,
     cerrada: false, t_cierre: null, cierre_motivo: null,
     errores_revision: [], errores_sellado: [], observaciones_operacionales: [],
-    log: []
+    sellos: [], log: []
   };
   DB.guias.push(g);
   dbSave(DB);
@@ -842,14 +921,67 @@ function resetFiltros() {
   renderDashboard();
 }
 
-function barChart(data, color) {
-  const max=Math.max(...Object.values(data),1);
-  return Object.entries(data).sort((a,b)=>b[1]-a[1]).slice(0,8).map(([k,v])=>
-    `<div class="bar-row">
-      <div class="bar-label" title="${k}">${k.length>18?k.slice(0,18)+'…':k}</div>
-      <div class="bar-track"><div class="bar-fill" style="width:${v/max*100}%;background:${color}"></div></div>
-      <div class="bar-val">${v}</div>
-    </div>`).join('');
+// ── Gráfico de barras horizontales ejecutivo (SVG) ──────────
+function execBarChart(data, palette) {
+  const entries = Object.entries(data).sort((a,b)=>b[1]-a[1]).slice(0,10);
+  if (!entries.length) return '<div style="color:var(--text2);font-size:12px;text-align:center;padding:30px">Sin datos disponibles</div>';
+  const total = entries.reduce((s,[,v])=>s+v,0);
+  const max = entries[0][1];
+  const W=480, ROW=44, PAD=20, LABEL=130, BAR_W=W-LABEL-70, H=entries.length*ROW+PAD*2;
+  const colors=['#0058A3','#1A8C4E','#E6B800','#C8202A','#6A3DBB','#E86A20','#17a2b8','#6c757d','#003A72','#28a745'];
+  const rows = entries.map(([k,v],i)=>{
+    const pct = Math.round(v/total*100);
+    const bw = Math.round(v/max*BAR_W);
+    const name = k.length>17 ? k.slice(0,17)+'…' : k;
+    const y = PAD + i*ROW;
+    const col = palette?palette[i%palette.length]:colors[i%colors.length];
+    return `
+      <text x="${LABEL-8}" y="${y+16}" text-anchor="end" font-size="11" fill="#4a6180" font-family="Space Mono,monospace">${name}</text>
+      <rect x="${LABEL}" y="${y+2}" width="${bw}" height="26" rx="5" fill="${col}" opacity="0.9"/>
+      <rect x="${LABEL}" y="${y+2}" width="${Math.min(bw,6)}" height="26" rx="5" fill="${col}"/>
+      <text x="${LABEL+bw+8}" y="${y+18}" font-size="12" fill="#071220" font-weight="800" font-family="Space Mono,monospace">${v}</text>
+      <text x="${LABEL+bw+8}" y="${y+30}" font-size="9" fill="#4a6180" font-family="Space Mono,monospace">${pct}%</text>`;
+  }).join('');
+  return `<svg viewBox="0 0 ${W} ${H}" width="100%" style="overflow:visible">${rows}</svg>`;
+}
+
+// ── Donut chart ejecutivo (SVG) ──────────────────────────────
+function donutChart(data) {
+  const entries = Object.entries(data).sort((a,b)=>b[1]-a[1]).slice(0,6);
+  if (!entries.length) return '<div style="color:var(--text2);font-size:12px;text-align:center;padding:30px">Sin datos disponibles</div>';
+  const total = entries.reduce((s,[,v])=>s+v,0);
+  const colors=['#0058A3','#FFCC00','#1A8C4E','#C8202A','#6A3DBB','#E86A20'];
+  const cx=110, cy=110, R=85, r=50;
+  let angle=-Math.PI/2, paths='';
+  entries.forEach(([k,v],i)=>{
+    const slice = (v/total)*Math.PI*2;
+    const x1=cx+R*Math.cos(angle), y1=cy+R*Math.sin(angle);
+    angle+=slice;
+    const x2=cx+R*Math.cos(angle), y2=cy+R*Math.sin(angle);
+    const xi1=cx+r*Math.cos(angle-slice), yi1=cy+r*Math.sin(angle-slice);
+    const xi2=cx+r*Math.cos(angle), yi2=cy+r*Math.sin(angle);
+    const large=slice>Math.PI?1:0;
+    paths+=`<path d="M${x1},${y1} A${R},${R} 0 ${large},1 ${x2},${y2} L${xi2},${yi2} A${r},${r} 0 ${large},0 ${xi1},${yi1} Z"
+      fill="${colors[i]}" stroke="#fff" stroke-width="2" opacity="0.92"/>`;
+  });
+  // Leyenda
+  const legend = entries.map(([k,v],i)=>{
+    const pct=Math.round(v/total*100);
+    const name=k.length>14?k.slice(0,14)+'…':k;
+    return `<div style="display:flex;align-items:center;gap:7px;margin-bottom:7px">
+      <div style="width:12px;height:12px;border-radius:3px;background:${colors[i]};flex-shrink:0"></div>
+      <span style="font-size:11px;color:var(--text);font-weight:600">${name}</span>
+      <span style="margin-left:auto;font-family:var(--mono);font-size:11px;font-weight:800;color:${colors[i]}">${v} <span style="color:var(--text2);font-weight:400">(${pct}%)</span></span>
+    </div>`;
+  }).join('');
+  return `<div style="display:flex;gap:20px;align-items:center;flex-wrap:wrap">
+    <svg viewBox="0 0 220 220" width="160" style="flex-shrink:0">
+      ${paths}
+      <text x="${cx}" y="${cy-6}" text-anchor="middle" font-size="22" font-weight="800" fill="#071220" font-family="Syne,sans-serif">${total}</text>
+      <text x="${cx}" y="${cy+12}" text-anchor="middle" font-size="10" fill="#4a6180" font-family="Space Mono,monospace">TOTAL</text>
+    </svg>
+    <div style="flex:1;min-width:140px">${legend}</div>
+  </div>`;
 }
 
 function renderDashboard() {
@@ -871,20 +1003,36 @@ function renderDashboard() {
     <div class="stat c5"><div class="stat-label">Err. Revisión</div><div class="stat-val">${errRev}</div><div class="stat-sub">devoluciones</div></div>
     <div class="stat c6"><div class="stat-label">Discrepancias</div><div class="stat-val">${errSell}</div><div class="stat-sub">en sellado</div></div>`;
 
-  // Gráficos
-  const byPrev={}, byOrigen={};
+  // ── Datos para gráficos ──────────────────────────────────────
+  const byPrev={}, byOrigen={}, byDestino={};
+  let dentroPlazo=0, fueraPlazo=0;
   data.forEach(g=>{
-    if(g.t_sellado) byPrev[g.receptor]=(byPrev[g.receptor]||0)+1;
-    byOrigen[g.origen]=(byOrigen[g.origen]||0)+1;
+    if (g.t_sellado&&!g.cerrada) {
+      byPrev[g.receptor]=(byPrev[g.receptor]||0)+1;
+      const tTotal=elapsed(g.t_recepcion,g.t_sellado);
+      if (tTotal>0) tTotal<=SLA_MS ? dentroPlazo++ : fueraPlazo++;
+    }
+    const ori=String(g.origen||'Sin origen');
+    byOrigen[ori]=(byOrigen[ori]||0)+1;
+    const dest=String(g.destino||g.bultos||'Sin destino');
+    byDestino[dest]=(byDestino[dest]||0)+1;
   });
+  const slaData = dentroPlazo||fueraPlazo ? {'✅ Dentro del SLA':dentroPlazo,'⚠ Fuera del SLA':fueraPlazo} : {};
+  const slaColors=['#1A8C4E','#C8202A'];
+
+  // ── Render gráficos ──────────────────────────────────────────
   document.getElementById('charts-row').innerHTML = `
-    <div class="chart-card">
+    <div class="chart-card" style="grid-column:1/-1">
       <div class="chart-title">👤 Guías Selladas por Prevencionista</div>
-      ${barChart(byPrev,'linear-gradient(90deg,var(--blue-dk),var(--blue))')||'<div style="color:var(--text2);font-size:12px;text-align:center;padding:20px">Sin datos</div>'}
+      ${execBarChart(byPrev)}
     </div>
     <div class="chart-card">
-      <div class="chart-title">📦 Guías por Origen</div>
-      ${barChart(byOrigen,'linear-gradient(90deg,var(--yellow-dk),var(--yellow))')||'<div style="color:var(--text2);font-size:12px;text-align:center;padding:20px">Sin datos</div>'}
+      <div class="chart-title">📦 Distribución por Origen</div>
+      ${donutChart(byOrigen)}
+    </div>
+    <div class="chart-card">
+      <div class="chart-title">🎯 Cumplimiento SLA (${Math.round((dentroPlazo/(dentroPlazo+fueraPlazo||1))*100)}%)</div>
+      ${donutChart(slaData)}
     </div>`;
 
   renderHistorial(data);
